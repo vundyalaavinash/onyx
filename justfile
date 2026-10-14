@@ -31,6 +31,7 @@ watch:
 
 # Launch Onyx from source against the watch build (run in a second terminal)
 dev:
+    for d in extensions/onyx-*/; do n=$(basename "$d"); ln -sfn "$(pwd)/$d" "vscode/extensions/$n"; done
     cd vscode && ./scripts/code.sh
 
 test:

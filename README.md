@@ -4,14 +4,14 @@ A Warp-styled, open-source build of VS Code (Code - OSS). Pure black, Hack font,
 
 ## Install
 
-Grab the latest build from [Releases](https://github.com/vundyalaavinash/onyx/releases). macOS builds are ad-hoc signed for now: right-click the app and choose Open the first time. Install the [Hack](https://sourcefoundry.org/hack/) font for the intended look (`brew install --cask font-hack`); without it Onyx falls back to the platform monospace.
+Grab the latest build from [Releases](https://github.com/vundyalaavinash/onyx/releases). macOS builds are ad-hoc signed until an Apple Developer ID is configured. On first launch macOS will refuse the app; open System Settings, Privacy & Security, and choose Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Onyx.app`. Install the [Hack](https://sourcefoundry.org/hack/) font for the intended look (`brew install --cask font-hack`); without it Onyx falls back to the platform monospace.
 
 ## Build locally (macOS)
 
 ```
 brew install just jq git-lfs librsvg imagemagick libicns icoutils
 nvm install && nvm use
-just build      # clones upstream, applies patches, builds ~30 min
+just build      # clones upstream, applies patches, builds in about 5 to 10 minutes
 just run        # opens the built app
 ```
 

@@ -34,7 +34,7 @@ jobs:
       MS_TAG: ${{ env.MS_TAG }}
       MS_COMMIT: ${{ env.MS_COMMIT }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: . ./get_repo.sh
@@ -59,17 +59,21 @@ jobs:
       MS_TAG: ${{ needs.version.outputs.MS_TAG }}
       MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
         if: matrix.vscode_arch == 'x64'
       - run: . ./get_repo.sh
+      - name: Disable updates when unsigned
+        env:
+          P12: ${{ secrets.CERTIFICATE_OSX_P12_DATA }}
+        run: if [[ -z "$P12" ]]; then echo "DISABLE_UPDATE=yes" >> "$GITHUB_ENV"; fi
       - name: Build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,6 +97,8 @@ jobs:
         run: |
           if [[ -z "$GITHUB_TOKEN" ]]; then
             echo "VERSIONS_TOKEN not set, skipping"
+          elif [[ "$DISABLE_UPDATE" == "yes" ]]; then
+            echo "updates disabled for unsigned build, skipping"
           else
             ./update_version.sh
           fi
@@ -115,17 +121,17 @@ jobs:
     outputs:
       BUILD_SOURCEVERSION: ${{ env.BUILD_SOURCEVERSION }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: egor-tensin/setup-gcc@v2
+      - uses: egor-tensin/setup-gcc@a2861a8b8538f49cf2850980acccf6b05a1b2ae4 # v2.0
         with:
           version: 10
           platform: x64
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: sudo apt-get update -y && sudo apt-get install -y libkrb5-dev
@@ -140,7 +146,7 @@ jobs:
           echo "vscode/.build/extensions/node_modules" >> vscode.txt
           echo "vscode/.git" >> vscode.txt
           tar -czf vscode.tar.gz -T vscode.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vscode-linux
           path: ./vscode.tar.gz
@@ -164,12 +170,12 @@ jobs:
       MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
       BUILD_SOURCEVERSION: ${{ needs.linux-compile.outputs.BUILD_SOURCEVERSION }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: ./build/linux/install_gh.sh
       - run: ./build/linux/deps.sh
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vscode-linux
       - name: Package binary
@@ -179,7 +185,7 @@ jobs:
         run: ./build/linux/package_bin.sh
       - name: Save binary for AppImage
         run: tar -czf vscode-bin.tar.gz -C "VSCode-linux-x64" .
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vscode-bin-x64
           path: ./vscode-bin.tar.gz
@@ -206,11 +212,16 @@ jobs:
       VSCODE_ARCH: x64
       RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pkgforge-dev/anylinux-setup-action@v5
-      - uses: actions/download-artifact@v8
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: pacman -Sy --noconfirm jq
+      - run: ./build/linux/install_gh.sh
+      - uses: pkgforge-dev/anylinux-setup-action@b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5 # v5
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vscode-bin-x64
       - run: ./build/linux/anylinux-appimage/build.sh
@@ -235,13 +246,13 @@ jobs:
     outputs:
       BUILD_SOURCEVERSION: ${{ env.BUILD_SOURCEVERSION }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: . ./get_repo.sh
@@ -255,7 +266,7 @@ jobs:
           echo "vscode/.build/extensions/node_modules" >> vscode.txt
           echo "vscode/.git" >> vscode.txt
           tar -czf vscode.tar.gz -T vscode.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vscode-windows
           path: ./vscode.tar.gz
@@ -280,16 +291,16 @@ jobs:
       MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
       BUILD_SOURCEVERSION: ${{ needs.windows-compile.outputs.BUILD_SOURCEVERSION }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vscode-windows
       - name: Package
