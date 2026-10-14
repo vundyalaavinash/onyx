@@ -12,7 +12,7 @@ echo "Installing debloated packages..."
 echo "---------------------------------------------------------------"
 get-debloated-pkgs --add-common --prefer-nano
 
-echo "Extracting VSCodium binary..."
+echo "Extracting Onyx binary..."
 echo "---------------------------------------------------------------"
 
 mkdir -p ./AppDir/bin ./AppDir/share/applications
@@ -54,13 +54,8 @@ sed -i \
   "./AppDir/share/applications/${NAME}-url-handler.desktop" \
   ./AppDir/bin/cli-router.hook
 
-if [[ "${VSCODE_QUALITY}" == "insider" ]]; then
-  export OUTNAME=${APP_NAME}-Insiders-${VERSION}-anylinux-"${ARCH}".AppImage
-  repo="vscodium-insiders"
-else
-  export OUTNAME=${APP_NAME}-${VERSION}-anylinux-"${ARCH}".AppImage
-  repo=${GITHUB_REPOSITORY#*/}
-fi
+export OUTNAME=${APP_NAME}-${VERSION}-anylinux-"${ARCH}".AppImage
+repo=${GITHUB_REPOSITORY#*/}
 
 export ARCH
 export OUTPATH=./dist

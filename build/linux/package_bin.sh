@@ -26,23 +26,6 @@ export VSCODE_SYSROOT_PREFIX='-glibc-2.28-gcc-10.5.0'
 if [[ "${VSCODE_ARCH}" == "arm64" ]]; then
   export VSCODE_SKIP_SYSROOT=1
   # export USE_GNUPP2A=1
-elif [[ "${VSCODE_ARCH}" == "ppc64le" ]]; then
-  export VSCODE_SYSROOT_REPOSITORY='VSCodium/vscode-linux-build-agent'
-  export VSCODE_SYSROOT_VERSION='20260706'
-  export ELECTRON_SKIP_BINARY_DOWNLOAD=1
-  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-  export VSCODE_ELECTRON_REPOSITORY='lex-ibm/electron-ppc64le-build-scripts'
-  export IGNORE_ELECTRON_VERSION="yes"
-elif [[ "${VSCODE_ARCH}" == "riscv64" ]]; then
-  export VSCODE_ELECTRON_REPOSITORY='riscv-forks/electron-riscv-releases'
-  export ELECTRON_SKIP_BINARY_DOWNLOAD=1
-  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-  export VSCODE_SKIP_SETUPENV=1
-elif [[ "${VSCODE_ARCH}" == "loong64" ]]; then
-  export VSCODE_ELECTRON_REPOSITORY='darkyzhou/electron-loong64'
-  export ELECTRON_SKIP_BINARY_DOWNLOAD=1
-  export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-  export VSCODE_SKIP_SETUPENV=1
 fi
 
 if [[ -f "../build/linux/${VSCODE_ARCH}/electron.sh" ]]; then

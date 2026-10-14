@@ -18,16 +18,6 @@ if [[ "${SHOULD_BUILD_EXE_USR}" != "no" ]]; then
   npm run gulp "vscode-win32-${VSCODE_ARCH}-user-setup"
 fi
 
-if [[ "${VSCODE_ARCH}" == "ia32" || "${VSCODE_ARCH}" == "x64" ]]; then
-  if [[ "${SHOULD_BUILD_MSI}" != "no" ]]; then
-    . ../build/windows/msi/build.sh
-  fi
-
-  if [[ "${SHOULD_BUILD_MSI_NOUP}" != "no" ]]; then
-    . ../build/windows/msi/build-updates-disabled.sh
-  fi
-fi
-
 cd ..
 
 if [[ "${SHOULD_BUILD_EXE_SYS}" != "no" ]]; then
@@ -40,14 +30,3 @@ if [[ "${SHOULD_BUILD_EXE_USR}" != "no" ]]; then
   mv "vscode\\.build\\win32-${VSCODE_ARCH}\\user-setup\\VSCodeSetup.exe" "assets\\${APP_NAME}UserSetup-${VSCODE_ARCH}-${RELEASE_VERSION}.exe"
 fi
 
-if [[ "${VSCODE_ARCH}" == "ia32" || "${VSCODE_ARCH}" == "x64" ]]; then
-  if [[ "${SHOULD_BUILD_MSI}" != "no" ]]; then
-    echo "Moving MSI"
-    mv "build\\windows\\msi\\releasedir\\${APP_NAME}-${VSCODE_ARCH}-${RELEASE_VERSION}.msi" assets/
-  fi
-
-  if [[ "${SHOULD_BUILD_MSI_NOUP}" != "no" ]]; then
-    echo "Moving MSI with disabled updates"
-    mv "build\\windows\\msi\\releasedir\\${APP_NAME}-${VSCODE_ARCH}-updates-disabled-${RELEASE_VERSION}.msi" assets/
-  fi
-fi
