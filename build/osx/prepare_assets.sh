@@ -56,16 +56,16 @@ if [[ -n "${CERTIFICATE_OSX_P12_DATA}" ]]; then
   cd ..
 fi
 
+if [[ -z "${CERTIFICATE_OSX_P12_DATA}" ]]; then
+  echo "+ no certificate: ad-hoc signing so the app launches on Apple Silicon"
+  codesign --force --deep --sign - "VSCode-darwin-${VSCODE_ARCH}/${APP_NAME}.app"
+fi
+
 if [[ "${SHOULD_BUILD_ZIP}" != "no" ]]; then
   echo "Building and moving ZIP"
   cd "VSCode-darwin-${VSCODE_ARCH}"
   zip -r -X -y "../assets/${APP_NAME}-darwin-${VSCODE_ARCH}-${RELEASE_VERSION}.zip" ./*.app
   cd ..
-fi
-
-if [[ -z "${CERTIFICATE_OSX_P12_DATA}" ]]; then
-  echo "+ no certificate: ad-hoc signing so the app launches on Apple Silicon"
-  codesign --force --deep --sign - "VSCode-darwin-${VSCODE_ARCH}/${APP_NAME}.app"
 fi
 
 if [[ -n "${CERTIFICATE_OSX_P12_DATA}" && "${SHOULD_BUILD_DMG}" != "no" ]]; then

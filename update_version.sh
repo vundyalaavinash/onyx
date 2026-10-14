@@ -166,22 +166,6 @@ elif [[ "${OS_NAME}" == "windows" ]]; then
   ASSET_NAME="${APP_NAME}-win32-${VSCODE_ARCH}-${RELEASE_VERSION}.zip"
   VERSION_PATH="${VSCODE_QUALITY}/win32/${VSCODE_ARCH}/archive"
   updateLatestVersion
-
-  if [[ "${VSCODE_ARCH}" == "ia32" || "${VSCODE_ARCH}" == "x64" ]]; then
-    # msi
-    if [[ "${SHOULD_BUILD_MSI}" != "no" ]]; then
-      ASSET_NAME="${APP_NAME}-${VSCODE_ARCH}-${RELEASE_VERSION}.msi"
-      VERSION_PATH="${VSCODE_QUALITY}/win32/${VSCODE_ARCH}/msi"
-      updateLatestVersion
-    fi
-
-    # updates-disabled msi
-    if [[ "${SHOULD_BUILD_MSI_NOUP}" != "no" ]]; then
-      ASSET_NAME="${APP_NAME}-${VSCODE_ARCH}-updates-disabled-${RELEASE_VERSION}.msi"
-      VERSION_PATH="${VSCODE_QUALITY}/win32/${VSCODE_ARCH}/msi-updates-disabled"
-      updateLatestVersion
-    fi
-  fi
 else # linux
   # update service links to tar.gz file
   # see https://update.code.visualstudio.com/api/update/linux-x64/stable/VERSION
