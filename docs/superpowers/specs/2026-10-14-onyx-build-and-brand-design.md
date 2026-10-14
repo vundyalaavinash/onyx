@@ -1,7 +1,7 @@
 # Onyx: build and brand (sub-project 1)
 
 Date: 2026-10-14
-Status: draft for review
+Status: shipped 1.140.06892
 
 ## What Onyx is
 
