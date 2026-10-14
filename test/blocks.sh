@@ -17,8 +17,8 @@ if grep '^+++ b/' "$P" \
   exit 1
 fi
 
-if [[ "$(grep -c '^+import' "$P" | head -1)" -lt 1 ]]; then
-  echo "blocks.sh: patch has no added import line" >&2
+if [[ "$(grep -cF "+import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';" "$P" | head -1)" -ne 1 ]]; then
+  echo "blocks.sh: patch must add exactly the onyxBlocks contribution import" >&2
   exit 1
 fi
 

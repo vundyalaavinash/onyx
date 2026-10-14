@@ -1555,7 +1555,7 @@ index 00000000..bcb9521a
 +// #endregion
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts
 new file mode 100644
-index 00000000..8c034435
+index 00000000..74980c4b
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts
 @@ -0,0 +1,20 @@
@@ -1573,7 +1573,7 @@ index 00000000..8c034435
 +
 +export const onyxBlocksConfiguration: IStringDictionary<IConfigurationPropertySchema> = {
 +	[OnyxBlocksSettingId.Enabled]: {
-+		markdownDescription: localize('onyx.blocks.enabled', "Show a command input pinned at the bottom of the terminal and one block per command above it. Requires shell integration; terminals without it behave like a stock terminal. Applies to new terminals."),
++		markdownDescription: localize('onyx.blocks.enabled', "Show a command input pinned at the bottom of the terminal and one block per command above it. Requires shell integration; terminals without it behave like a stock terminal. Changes apply to open terminals immediately."),
 +		type: 'boolean',
 +		default: true,
 +		scope: ConfigurationScope.WINDOW,
