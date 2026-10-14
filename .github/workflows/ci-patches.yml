@@ -1,0 +1,36 @@
+name: CI - Patches apply
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+env:
+  APP_NAME: Onyx
+  BINARY_NAME: onyx
+  ORG_NAME: vundyalaavinash
+  GH_REPO_PATH: vundyalaavinash/onyx
+  ASSETS_REPOSITORY: vundyalaavinash/onyx
+  OS_NAME: linux
+  VSCODE_ARCH: x64
+  VSCODE_QUALITY: stable
+  CI_BUILD: "no"
+  DISABLE_UPDATE: "yes"
+
+jobs:
+  patches:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Unit checks
+        run: ./test/syntax.sh && ./test/brand.sh && ./test/product.sh
+      - name: Clone upstream
+        run: . ./get_repo.sh
+      - name: Apply patches without installing
+        env:
+          SKIP_INSTALL: "yes"
+        run: ./prepare_vscode.sh

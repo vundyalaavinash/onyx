@@ -1,0 +1,50 @@
+name: CI - Build - macOS arm64
+
+on:
+  pull_request:
+    paths-ignore: ["**/*.md", "docs/**"]
+  push:
+    branches: [main]
+    paths-ignore: ["**/*.md", "docs/**"]
+  workflow_dispatch: {}
+
+permissions: {}
+
+env:
+  APP_NAME: Onyx
+  BINARY_NAME: onyx
+  ORG_NAME: vundyalaavinash
+  GH_REPO_PATH: vundyalaavinash/onyx
+  ASSETS_REPOSITORY: vundyalaavinash/onyx
+  OS_NAME: osx
+  VSCODE_ARCH: arm64
+  VSCODE_QUALITY: stable
+  MAX_OLD_SPACE_SIZE: 12288
+  SHOULD_BUILD: "yes"
+  SHOULD_BUILD_CLI: "no"
+  SHOULD_BUILD_REH: "no"
+  SHOULD_BUILD_REH_WEB: "no"
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Clone upstream
+        run: . ./get_repo.sh
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+      - name: Package
+        run: ./prepare_assets.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Onyx-darwin-arm64
+          path: assets/
+          retention-days: 3

@@ -48,22 +48,23 @@ Sub-projects and order:
 
 ```
 onyx/
-  build/            VSCodium scripts (get_repo.sh, prepare_vscode.sh, build.sh,
-                    prepare_assets.sh, release.sh, utils.sh, version.sh)
+  *.sh              VSCodium pipeline scripts at the root (get_repo, prepare_vscode,
+                    build, prepare_assets, release, utils, version)
+  build/            per-OS helpers: osx/, linux/, windows/
   patches/          VSCodium's patches we keep, plus ours, applied in name order
-  extensions/       Onyx built-in extensions (empty in sub-project 1 except a
-                    placeholder README)
-  product.json      Onyx product identity and configuration defaults
+  extensions/       Onyx built-in extensions (placeholder README in sub-project 1)
+  product.json      Onyx identity, URLs, gallery, and configuration defaults
   upstream/stable.json   pinned VS Code tag and commit
-  resources/        app icons per platform
-  .github/workflows/ ci-build-{macos,linux,windows}.yml, publish-stable-*.yml
+  icons/ src/stable/     icon sources and generated icon files
+  test/             shell checks run locally and in CI
+  .github/workflows/ ci-patches.yml, ci-build-macos.yml, publish.yml
   docs/superpowers/ specs and plans
 ```
 
-`build/get_repo.sh` clones upstream VS Code at the pinned tag into `vscode/`
-(git-ignored). `build/prepare_vscode.sh` applies `patches/`, merges
-`product.json`, and copies `extensions/onyx-*` into `vscode/extensions/` so
-they compile as built-ins. `build/build.sh` runs the upstream gulp tasks.
+`get_repo.sh` clones upstream at the pinned tag into `vscode/` (git-ignored).
+`prepare_vscode.sh` applies `patches/`, merges `product.json`, and copies
+`extensions/onyx-*` into `vscode/extensions/`. `build.sh` runs the upstream gulp
+tasks.
 
 ## Patches
 
@@ -168,7 +169,7 @@ onboarding, Windows arm64 and Linux arm64 builds, insiders channel, a website.
 
 ## Success criteria
 
-A tag `v0.1.0` produces downloadable builds for macOS arm64, macOS x64, Linux
+Running the Publish workflow produces a GitHub release named `1.140.0NNNN` with downloadable builds for macOS arm64, macOS x64, Linux
 x64, and Windows x64. A fresh install on a Mac with no settings opens looking
 like the user's current VS Code with the Warp look, installs an extension from
 Open VSX, and reports its version in About.

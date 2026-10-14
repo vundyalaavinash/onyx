@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+	<id>@@NAME@@.desktop</id>
+	<metadata_license>@@LICENSE@@</metadata_license>
+	<project_license>@@LICENSE@@</project_license>
+	<name>@@NAME_LONG@@</name>
+	<url type="homepage">https://github.com/vundyalaavinash/onyx</url>
+	<summary>Onyx. A Warp-styled VS Code.</summary>
+	<description>
+		<p>Onyx is an open-source build of Code - OSS with a pure black theme, the terminal in the main area, and an agent pane on the right.</p>
+	</description>
+</component>
