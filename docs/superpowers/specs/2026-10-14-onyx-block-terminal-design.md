@@ -1,6 +1,6 @@
 # Onyx block terminal: design
 
-Status: draft for review
+Status: implemented, pending release
 Sub-project: 4 of 4 (moved ahead of the agent API and review panel on 2026-10-14)
 Depends on: sub-project 1 (build and brand), shipped as 1.140.06892
 
