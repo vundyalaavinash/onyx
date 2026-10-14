@@ -19,8 +19,8 @@ prepare: clone
     SKIP_INSTALL=yes ./prepare_vscode.sh
 
 # Full local build into VSCode-darwin-<arch>/Onyx.app (~30 min)
-build: clone
-    ./build.sh && ./prepare_assets.sh
+build:
+    set -a; rm -rf vscode; . ./get_repo.sh; . ./utils.sh; set +a; ./build.sh && ./prepare_assets.sh
 
 run:
     open "VSCode-darwin-${VSCODE_ARCH}/Onyx.app"
