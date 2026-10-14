@@ -9,10 +9,10 @@ index 8b880c7f..d1a74774 100644
 +import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
 new file mode 100644
-index 00000000..24a06183
+index 00000000..34c75563
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,130 @@
 +/* Onyx block terminal */
 +
 +.monaco-workbench .terminal-wrapper.onyx-blocks {
@@ -68,6 +68,80 @@ index 00000000..24a06183
 +.onyx-block-input .monaco-editor .monaco-editor-background,
 +.onyx-block-input .monaco-editor .margin {
 +	background-color: #000 !important;
++}
++
++.monaco-workbench .terminal-wrapper.onyx-blocks .onyx-blocks-overlay {
++	position: absolute;
++	z-index: 32;
++	pointer-events: none;
++	overflow: hidden;
++}
++
++.onyx-blocks-overlay .onyx-block {
++	position: absolute;
++	left: 0;
++	right: 0;
++	box-sizing: border-box;
++	border-left: 2px solid #1a1a1a;
++	background: transparent;
++}
++
++.onyx-blocks-overlay .onyx-block.odd {
++	background: rgba(255, 255, 255, 0.025);
++}
++
++.onyx-blocks-overlay .onyx-block.failed {
++	border-left-color: rgba(255, 130, 114, 0.4);
++}
++
++.onyx-blocks-overlay .onyx-block.selected {
++	border-left-color: #00c2ff;
++	background: rgba(0, 194, 255, 0.06);
++}
++
++.onyx-blocks-overlay .onyx-block.running {
++	border-left-color: #00c2ff;
++	animation: onyx-block-pulse 1.2s ease-in-out infinite;
++}
++
++@keyframes onyx-block-pulse {
++	0%, 100% { border-left-color: rgba(0, 194, 255, 0.35); }
++	50% { border-left-color: #00c2ff; }
++}
++
++.onyx-blocks-overlay .onyx-block-toolbar {
++	position: absolute;
++	top: 2px;
++	right: 6px;
++	display: none;
++	gap: 2px;
++	pointer-events: auto;
++	background: #0f0f0f;
++	border: 1px solid #1a1a1a;
++	border-radius: 4px;
++	padding: 1px;
++}
++
++.onyx-blocks-overlay .onyx-block.hover .onyx-block-toolbar,
++.onyx-blocks-overlay .onyx-block.selected .onyx-block-toolbar {
++	display: flex;
++}
++
++.onyx-blocks-overlay .onyx-block-action {
++	all: unset;
++	cursor: pointer;
++	color: #8e8e8e;
++	width: 20px;
++	height: 20px;
++	display: inline-flex;
++	align-items: center;
++	justify-content: center;
++	border-radius: 3px;
++}
++
++.onyx-blocks-overlay .onyx-block-action:hover {
++	color: #ffffff;
++	background: #1a1a1a;
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts
 new file mode 100644
@@ -533,12 +607,214 @@ index 00000000..7f1a9d2e
 +		}
 +	}
 +}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts
+new file mode 100644
+index 00000000..68247d51
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts
+@@ -0,0 +1,196 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
++import * as dom from '../../../../../base/browser/dom.js';
++import { Codicon } from '../../../../../base/common/codicons.js';
++import { Disposable, DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
++import { ThemeIcon } from '../../../../../base/common/themables.js';
++import { localize } from '../../../../../nls.js';
++import type { IXtermTerminal } from '../../../terminal/browser/terminal.js';
++import type { BlockModel, IBlock } from './onyxBlockModel.js';
++
++export interface IBlockActions {
++	copyCommand(block: IBlock): void;
++	copyOutput(block: IBlock): void;
++	rerun(block: IBlock): void;
++	sendToAgent(block: IBlock): void;
++}
++
++const BAND_INSET = 4;
++
++interface IBlockElement {
++	root: HTMLElement;
++	toolbar: HTMLElement;
++}
++
++/** Finished blocks with an empty command line are prompt redraws (re-enable, resize) and get no band. */
++function isDrawn(block: IBlock): boolean {
++	return block.isRunning || block.commandLine.trim().length > 0;
++}
++
++/**
++ * Draws one translucent band per block over the xterm screen, positioned from the block's
++ * marker lines. Pointer events pass through to xterm except on the hover toolbar; hover and
++ * click are derived from mouse rows on the xterm element.
++ */
++export class OnyxBlockOverlay extends Disposable {
++	private readonly _element: HTMLElement;
++	private readonly _elements = new Map<number, IBlockElement>();
++	private _hoveredId: number | undefined;
++	private _refreshQueued = false;
++	private readonly _listeners = this._register(new DisposableStore());
++
++	constructor(
++		private readonly _xterm: IXtermTerminal & { raw: RawXtermTerminal },
++		private readonly _model: BlockModel,
++		private readonly _actions: IBlockActions,
++	) {
++		super();
++		const host = _xterm.raw.element!;
++		this._element = dom.append(host, dom.$('.onyx-blocks-overlay'));
++		this._register(toDisposable(() => this._element.remove()));
++
++		this._listeners.add(_xterm.raw.onScroll(() => this.refresh()));
++		this._listeners.add(_xterm.raw.onResize(() => this.refresh()));
++		this._listeners.add(_xterm.raw.onWriteParsed(() => this.refresh()));
++		this._listeners.add(_model.onDidChange(() => this.refresh()));
++
++		this._listeners.add(dom.addDisposableListener(host, 'mousemove', e => this._setHovered(this._blockAtEvent(e)?.id)));
++		this._listeners.add(dom.addDisposableListener(host, 'mouseleave', () => this._setHovered(undefined)));
++		this._listeners.add(dom.addDisposableListener(host, 'mousedown', e => {
++			if (e.button !== 0 || (e.target as HTMLElement).closest('.onyx-block-toolbar')) {
++				return;
++			}
++			const block = this._blockAtEvent(e);
++			this._model.select(block?.id);
++		}));
++		this.refresh();
++	}
++
++	refresh(): void {
++		if (this._refreshQueued) {
++			return;
++		}
++		this._refreshQueued = true;
++		queueMicrotask(() => {
++			this._refreshQueued = false;
++			if (!this._store.isDisposed) {
++				this._render();
++			}
++		});
++	}
++
++	private _rowHeight(): number | undefined {
++		return this._xterm.raw.dimensions?.css?.cell?.height;
++	}
++
++	private _screen(): HTMLElement | null {
++		return this._xterm.raw.element?.querySelector<HTMLElement>('.xterm-screen') ?? null;
++	}
++
++	private _blockAtEvent(e: MouseEvent): IBlock | undefined {
++		const rowHeight = this._rowHeight();
++		const screen = this._screen();
++		if (!rowHeight || !screen) {
++			return undefined;
++		}
++		const rect = screen.getBoundingClientRect();
++		const row = Math.floor((e.clientY - rect.top) / rowHeight);
++		if (row < 0 || row >= this._xterm.raw.rows) {
++			return undefined;
++		}
++		const line = this._xterm.raw.buffer.active.viewportY + row;
++		return this._model.blocks.find(b => {
++			const start = b.startLine;
++			return isDrawn(b) && start !== undefined && line >= start && line <= this._lastLine(b, start);
++		});
++	}
++
++	/** Last buffer line of a block, inclusive. Upstream's end marker is exclusive (see `getOutput`), it sits on the next prompt. */
++	private _lastLine(block: IBlock, start: number): number {
++		if (block.endLine !== undefined) {
++			return Math.max(start, block.endLine - 1);
++		}
++		const buffer = this._xterm.raw.buffer.active;
++		return buffer.baseY + buffer.cursorY;
++	}
++
++	private _setHovered(id: number | undefined): void {
++		if (this._hoveredId === id) {
++			return;
++		}
++		this._hoveredId = id;
++		for (const [blockId, el] of this._elements) {
++			el.root.classList.toggle('hover', blockId === id);
++		}
++	}
++
++	private _render(): void {
++		const rowHeight = this._rowHeight();
++		const screen = this._screen();
++		if (!rowHeight || !screen) {
++			return;
++		}
++		this._element.style.top = `${screen.offsetTop}px`;
++		// Start the bands a few pixels left of the first column so the edge does not cover text.
++		this._element.style.left = `${screen.offsetLeft - BAND_INSET}px`;
++		this._element.style.width = `${screen.clientWidth + BAND_INSET}px`;
++		this._element.style.height = `${this._xterm.raw.rows * rowHeight}px`;
++
++		const viewportY = this._xterm.raw.buffer.active.viewportY;
++		const rows = this._xterm.raw.rows;
++		const seen = new Set<number>();
++		let drawn = 0;
++		for (const block of this._model.blocks) {
++			const start = block.startLine;
++			if (start === undefined || !isDrawn(block)) {
++				continue;
++			}
++			// The shade alternates by position among drawn blocks, including those scrolled out of view.
++			const odd = drawn++ % 2 === 1;
++			const end = this._lastLine(block, start);
++			const topRow = start - viewportY;
++			const bottomRow = end - viewportY;
++			if (bottomRow < 0 || topRow >= rows) {
++				continue;
++			}
++			seen.add(block.id);
++			const el = this._elements.get(block.id) ?? this._createElement(block);
++			this._elements.set(block.id, el);
++			el.root.style.top = `${Math.max(topRow, 0) * rowHeight}px`;
++			el.root.style.height = `${(Math.min(bottomRow, rows - 1) - Math.max(topRow, 0) + 1) * rowHeight}px`;
++			el.root.classList.toggle('odd', odd);
++			el.root.classList.toggle('selected', block.id === this._model.selectedId);
++			el.root.classList.toggle('failed', block.exitCode !== undefined && block.exitCode !== 0);
++			el.root.classList.toggle('running', block.isRunning);
++			el.root.classList.toggle('hover', block.id === this._hoveredId);
++			el.toolbar.style.display = block.isRunning ? 'none' : '';
++		}
++		for (const [id, el] of this._elements) {
++			if (!seen.has(id)) {
++				el.root.remove();
++				this._elements.delete(id);
++			}
++		}
++	}
++
++	private _createElement(block: IBlock): IBlockElement {
++		const root = dom.append(this._element, dom.$('.onyx-block'));
++		const toolbar = dom.append(root, dom.$('.onyx-block-toolbar'));
++		const button = (icon: ThemeIcon, title: string, run: () => void) => {
++			const b = dom.append(toolbar, dom.$('button.onyx-block-action'));
++			b.title = title;
++			b.appendChild(dom.$(ThemeIcon.asCSSSelector(icon)));
++			b.addEventListener('mousedown', e => e.preventDefault());
++			b.addEventListener('click', e => { e.stopPropagation(); run(); });
++		};
++		const current = () => this._model.blocks.find(b => b.id === block.id) ?? block;
++		button(Codicon.copy, localize('onyx.blocks.copyCommand', "Copy command"), () => this._actions.copyCommand(current()));
++		button(Codicon.output, localize('onyx.blocks.copyOutput', "Copy output"), () => this._actions.copyOutput(current()));
++		button(Codicon.debugRerun, localize('onyx.blocks.rerun', "Re-run"), () => this._actions.rerun(current()));
++		button(Codicon.sparkle, localize('onyx.blocks.sendToAgent', "Send to agent"), () => this._actions.sendToAgent(current()));
++		return { root, toolbar };
++	}
++}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..f7b16ac2
+index 00000000..c8d41973
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,384 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -562,12 +838,13 @@ index 00000000..f7b16ac2
 +import { OnyxBlockCompletionProvider } from './onyxBlockCompletions.js';
 +import { OnyxBlockInput, type IOnyxBlockController } from './onyxBlockInput.js';
 +import { BlockModel, type IBlock } from './onyxBlockModel.js';
++import { OnyxBlockOverlay, type IBlockActions } from './onyxBlockOverlay.js';
 +import { shouldEnableBlocks } from './onyxBlocksEnablement.js';
 +import { deriveInputState, InputState, sendPathFor } from './onyxInputState.js';
 +
 +export const AgentSendBlockCommandId = 'onyx.agent.sendBlock';
 +
-+export class OnyxBlocksContribution extends Disposable implements ITerminalContribution, IOnyxBlockController {
++export class OnyxBlocksContribution extends Disposable implements ITerminalContribution, IOnyxBlockController, IBlockActions {
 +	static readonly ID = 'terminal.onyxBlocks';
 +
 +	static get(instance: ITerminalInstance): OnyxBlocksContribution | null {
@@ -673,6 +950,9 @@ index 00000000..f7b16ac2
 +		// History: this session's commands first, then the persisted per-shell history.
 +		this._loadHistory(input, capability);
 +		this._enabledParts.add(capability.onCommandFinished(c => { if (c.command) { input.history.push(c.command); } }));
++
++		this._enabledParts.add(new OnyxBlockOverlay(xterm, this.model, this));
++		this._enabledParts.add(this.model.onDidChange(() => this._revealSelectedBlock()));
 +
 +		// Working directory header.
 +		this._updateHeader(input, capability);
@@ -796,6 +1076,19 @@ index 00000000..f7b16ac2
 +			xterm.raw.focus();
 +		} else if (wasAlt && this._ctx.instance.hasFocus) {
 +			input.focus();
++		}
++	}
++
++	private _revealSelectedBlock(): void {
++		const block = this.model.selectedBlock;
++		const xterm = this._xterm;
++		if (!block || !xterm || block.startLine === undefined) {
++			return;
++		}
++		const buffer = xterm.raw.buffer.active;
++		const rows = xterm.raw.rows;
++		if (block.startLine < buffer.viewportY || block.startLine >= buffer.viewportY + rows) {
++			xterm.raw.scrollToLine(block.startLine);
 +		}
 +	}
 +
@@ -1058,7 +1351,7 @@ index 00000000..8e2a62da
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
 new file mode 100644
-index 00000000..446e9f20
+index 00000000..bcb9521a
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
 @@ -0,0 +1,178 @@
@@ -1218,7 +1511,7 @@ index 00000000..446e9f20
 +KeybindingsRegistry.registerCommandAndKeybindingRule({
 +	id: 'onyx.blocks.clearBlockSelection',
 +	weight,
-+	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	when: ContextKeyExpr.and(inputFocused, noSuggest, EditorContextKeys.hasNonEmptySelection.negate()),
 +	primary: KeyCode.Escape,
 +	handler: accessor => withInput(accessor, input => input.controller.selectBlock('clear')),
 +});
@@ -1226,7 +1519,7 @@ index 00000000..446e9f20
 +KeybindingsRegistry.registerCommandAndKeybindingRule({
 +	id: 'onyx.blocks.copyTerminalSelection',
 +	weight: weight + 1,
-+	when: ContextKeyExpr.and(inputFocused, TerminalContextKeys.textSelected),
++	when: ContextKeyExpr.and(inputFocused, TerminalContextKeys.textSelected, EditorContextKeys.hasNonEmptySelection.negate()),
 +	primary: KeyMod.CtrlCmd | KeyCode.KeyC,
 +	handler: accessor => withInput(accessor, input => input.controller.copyTerminalSelection()),
 +});
