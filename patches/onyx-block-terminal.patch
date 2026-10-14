@@ -9,10 +9,10 @@ index 8b880c7f..d1a74774 100644
 +import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
 new file mode 100644
-index 00000000..0e149418
+index 00000000..ed534700
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,139 @@
 +/* Onyx block terminal */
 +
 +.monaco-workbench .terminal-wrapper.onyx-blocks {
@@ -35,6 +35,10 @@ index 00000000..0e149418
 +	border-top: 1px solid #1a1a1a;
 +	display: flex;
 +	flex-direction: column;
++}
++
++.monaco-workbench .terminal-wrapper.onyx-blocks .onyx-block-input.inactive {
++	opacity: 0.5;
 +}
 +
 +.onyx-block-input-header {
@@ -150,10 +154,10 @@ index 00000000..0e149418
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts
 new file mode 100644
-index 00000000..c4def177
+index 00000000..3da08a60
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,75 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -204,8 +208,10 @@ index 00000000..c4def177
 +		if (model.uri.toString() !== this._inputUri.toString()) {
 +			return undefined;
 +		}
-+		const value = model.getValue();
-+		const cursorIndex = model.getOffsetAt(position);
++		// Completions see only the cursor's line: a multi-line input is several shell lines.
++		const lineNumber = position.lineNumber;
++		const value = model.getLineContent(lineNumber);
++		const cursorIndex = position.column - 1;
 +		const items = await this._completionService.provideCompletions(
 +			value, cursorIndex, true, this._instance.shellType, this._instance.capabilities, token, false, false, true,
 +		);
@@ -221,18 +227,18 @@ index 00000000..c4def177
 +				detail: c.detail,
 +				documentation: c.documentation,
 +				insertText: c.inputData ?? label,
-+				range: Range.fromPositions(model.getPositionAt(start), model.getPositionAt(end)),
++				range: new Range(lineNumber, start + 1, lineNumber, end + 1),
 +			};
 +		});
-+		return { suggestions };
++		return { suggestions, incomplete: true };
 +	}
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
 new file mode 100644
-index 00000000..b6148d62
+index 00000000..7bb4aba6
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,216 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -241,6 +247,7 @@ index 00000000..b6148d62
 +import { Emitter, Event } from '../../../../../base/common/event.js';
 +import { Disposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 +import { URI } from '../../../../../base/common/uri.js';
++import { localize } from '../../../../../nls.js';
 +import type { ICodeEditor } from '../../../../../editor/browser/editorBrowser.js';
 +import { ICodeEditorService } from '../../../../../editor/browser/services/codeEditorService.js';
 +import { CodeEditorWidget } from '../../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
@@ -261,7 +268,7 @@ index 00000000..b6148d62
 +const HeaderHeight = 18;
 +
 +export namespace OnyxBlocksContextKeys {
-+	export const inputFocused = new RawContextKey<boolean>('onyxBlocks.inputFocused', false, 'Whether the Onyx block terminal input is focused.');
++	export const inputFocused = new RawContextKey<boolean>('onyxBlocks.inputFocused', false, localize('onyxBlocks.inputFocused', "Whether the Onyx block terminal input is focused."));
 +}
 +
 +export interface IOnyxBlockController {
@@ -269,6 +276,8 @@ index 00000000..b6148d62
 +	run(text: string): void;
 +	interrupt(): void;
 +	clearTerminal(): void;
++	scrollPages(n: number): void;
++	scrollToEdge(top: boolean): void;
 +	selectBlock(direction: 'previous' | 'next' | 'clear'): void;
 +	copyTerminalSelection(): void;
 +	focusFind(): void;
@@ -276,6 +285,10 @@ index 00000000..b6148d62
 +
 +const inputsByEditor = new Map<ICodeEditor, OnyxBlockInput>();
 +let nextInputId = 1;
++
++function languageIdFor(shellType: TerminalShellType | undefined): string {
++	return shellType === GeneralShellType.PowerShell ? 'powershell' : 'shellscript';
++}
 +
 +export class OnyxBlockInput extends Disposable {
 +	static readonly SCHEME = 'onyx-block-input';
@@ -333,9 +346,8 @@ index 00000000..b6148d62
 +		glyph.style.lineHeight = `${this._lineHeight}px`;
 +		this._header.style.fontFamily = fontFamily;
 +
-+		const languageId = shellType === GeneralShellType.PowerShell ? 'powershell' : 'shellscript';
 +		this.uri = URI.from({ scheme: OnyxBlockInput.SCHEME, path: `/input-${nextInputId++}` });
-+		this._model = this._register(modelService.createModel('', languageService.createById(languageId), this.uri));
++		this._model = this._register(modelService.createModel('', languageService.createById(languageIdFor(shellType)), this.uri));
 +
 +		const scopedContextKeyService = this._register(contextKeyService.createScoped(this.domNode));
 +		this._focusedKey = OnyxBlocksContextKeys.inputFocused.bindTo(scopedContextKeyService);
@@ -349,8 +361,9 @@ index 00000000..b6148d62
 +			wordWrap: 'on',
 +			quickSuggestions: false,
 +			suggestOnTriggerCharacters: false,
++			acceptSuggestionOnEnter: 'on',
 +			padding: { top: 0, bottom: 0 },
-+			ariaLabel: 'Onyx terminal input',
++			ariaLabel: localize('onyxBlocks.inputAriaLabel', "Onyx terminal input"),
 +		}, getSimpleCodeEditorWidgetOptions()));
 +		this.editor.setModel(this._model);
 +		inputsByEditor.set(this.editor, this);
@@ -390,6 +403,15 @@ index 00000000..b6148d62
 +
 +	focus(): void {
 +		this.editor.focus();
++	}
++
++	setShellType(shellType: TerminalShellType | undefined): void {
++		this._model.setLanguage(languageIdFor(shellType));
++	}
++
++	/** Dimmed while a command runs; the input keeps its height so the PTY is not resized. */
++	setInactive(inactive: boolean): void {
++		this.domNode.classList.toggle('inactive', inactive);
 +	}
 +
 +	setVisible(visible: boolean): void {
@@ -832,10 +854,10 @@ index 00000000..1ba918e6
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..8b03298a
+index 00000000..75d876e3
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,436 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -845,11 +867,13 @@ index 00000000..8b03298a
 +import { Event } from '../../../../../base/common/event.js';
 +import { Disposable, DisposableStore, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 +import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
-+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
++import { IAccessibilityService } from '../../../../../platform/accessibility/common/accessibility.js';
++import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 +import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 +import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 +import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 +import { TerminalCapability, type ICommandDetectionCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
++import { PromptInputState, type IPromptInputModelState } from '../../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 +import { localize } from '../../../../../nls.js';
 +import type { ITerminalContribution, ITerminalInstance, IXtermTerminal } from '../../../terminal/browser/terminal.js';
 +import type { ITerminalContributionContext } from '../../../terminal/browser/terminalExtensions.js';
@@ -880,6 +904,10 @@ index 00000000..8b03298a
 +	private _isEnabled = false;
 +	private _state = InputState.Prompt;
 +	private _relayoutQueued = false;
++	/** Set by run() until the next prompt starts: the shell line holds text the input sent. */
++	private _sentByInput = false;
++	/** Set after sending \x15 until the shell line reads empty, so one line is adopted once. */
++	private _killPending = false;
 +	private readonly _enabledParts = this._register(new DisposableStore());
 +	private readonly _input = this._register(new MutableDisposable<OnyxBlockInput>());
 +
@@ -891,6 +919,7 @@ index 00000000..8b03298a
 +		@IClipboardService private readonly _clipboardService: IClipboardService,
 +		@ICommandService private readonly _commandService: ICommandService,
 +		@INotificationService private readonly _notificationService: INotificationService,
++		@IAccessibilityService private readonly _accessibilityService: IAccessibilityService,
 +	) {
 +		super();
 +		this._register(Event.runAndSubscribe(this._configurationService.onDidChangeConfiguration, e => {
@@ -898,6 +927,7 @@ index 00000000..8b03298a
 +				this._refreshState();
 +			}
 +		}));
++		this._register(this._accessibilityService.onDidChangeScreenReaderOptimized(() => this._refreshState()));
 +		this._register(this._ctx.instance.capabilities.onDidAddCapability(e => {
 +			if (e.id === TerminalCapability.CommandDetection) {
 +				this._refreshState();
@@ -936,6 +966,7 @@ index 00000000..8b03298a
 +			settingEnabled: this._configurationService.getValue<boolean>(OnyxBlocksSettingId.Enabled) === true,
 +			hasCommandDetection: this._ctx.instance.capabilities.has(TerminalCapability.CommandDetection),
 +			xtermOpened: this._xtermOpened && !!this._xterm?.raw.element,
++			screenReaderOptimized: this._accessibilityService.isScreenReaderOptimized(),
 +		});
 +		if (wanted && !this._isEnabled) {
 +			this._enable();
@@ -1007,11 +1038,17 @@ index 00000000..8b03298a
 +		this._enabledParts.add(xterm.raw.buffer.onBufferChange(update));
 +		update();
 +
-+		// Typing anywhere in the terminal lands in the input unless a full-screen program owns it.
++		// Text that reaches the shell line directly (sendText, a dropped path, type-ahead) moves into the input.
++		this._enabledParts.add(capability.promptInputModel.onDidStartInput(() => this._sentByInput = false));
++		this._enabledParts.add(capability.promptInputModel.onDidChangeInput(e => this._adoptShellLine(input, capability, e)));
++		this._enabledParts.add(this._ctx.instance.onDidChangeShellType(t => input.setShellType(t)));
++
++		// At a prompt, typing anywhere in the terminal lands in the input. While a command runs or a
++		// full-screen program owns the terminal, xterm keeps the keyboard.
 +		const textarea = xterm.raw.textarea;
 +		if (textarea) {
 +			const onFocus = () => {
-+				if (this._state !== InputState.AltBuffer) {
++				if (this._state === InputState.Prompt) {
 +					input.focus();
 +				}
 +			};
@@ -1019,11 +1056,17 @@ index 00000000..8b03298a
 +			this._enabledParts.add({ dispose: () => textarea.removeEventListener('focus', onFocus) });
 +		}
 +		this._enabledParts.add(this._ctx.instance.onDidFocus(() => {
-+			if (this._state !== InputState.AltBuffer) {
++			if (this._state === InputState.Prompt) {
 +				input.focus();
 +			}
 +		}));
-+		if (this._ctx.instance.hasFocus) {
++		// A click into the dimmed input while a command runs goes back to the program.
++		this._enabledParts.add(input.editor.onDidFocusEditorText(() => {
++			if (this._state === InputState.Executing) {
++				xterm.raw.focus();
++			}
++		}));
++		if (this._ctx.instance.hasFocus && this._state === InputState.Prompt) {
 +			input.focus();
 +		}
 +	}
@@ -1031,6 +1074,8 @@ index 00000000..8b03298a
 +	private _disable(): void {
 +		this._isEnabled = false;
 +		this._state = InputState.Prompt;
++		this._sentByInput = false;
++		this._killPending = false;
 +		this._enabledParts.clear();
 +		this._input.clear();
 +		this.model.detach();
@@ -1082,21 +1127,45 @@ index 00000000..8b03298a
 +		if (!xterm || !input) {
 +			return;
 +		}
++		// Prompt is the prompt input model's Input state; before it knows, fall back to command detection.
++		const promptState = capability.promptInputModel.state;
 +		const next = deriveInputState({
 +			altBufferActive: xterm.raw.buffer.active.type === 'alternate',
-+			commandExecuting: capability.executingCommand !== undefined,
++			commandExecuting: promptState === PromptInputState.Unknown ? capability.executingCommand !== undefined : promptState !== PromptInputState.Input,
 +		});
 +		if (next === this._state) {
 +			return;
 +		}
-+		const wasAlt = this._state === InputState.AltBuffer;
 +		this._state = next;
 +		input.setVisible(next !== InputState.AltBuffer);
++		input.setInactive(next === InputState.Executing);
 +		if (next === InputState.AltBuffer) {
 +			xterm.raw.focus();
-+		} else if (wasAlt && this._ctx.instance.hasFocus) {
++		} else if (this._ctx.instance.hasFocus) {
++			if (next === InputState.Prompt) {
++				input.focus();
++			} else {
++				xterm.raw.focus();
++			}
++		}
++	}
++
++	/** Moves text the shell line received from elsewhere into the input and clears the shell line. */
++	private _adoptShellLine(input: OnyxBlockInput, capability: ICommandDetectionCapability, e: IPromptInputModelState): void {
++		const text = e.ghostTextIndex === -1 ? e.value : e.value.substring(0, e.ghostTextIndex);
++		if (text.trim().length === 0) {
++			this._killPending = false;
++			return;
++		}
++		if (this._state !== InputState.Prompt || capability.promptInputModel.state !== PromptInputState.Input || this._sentByInput || this._killPending) {
++			return;
++		}
++		input.setValue(input.value + text);
++		if (this._ctx.instance.hasFocus) {
 +			input.focus();
 +		}
++		this._killPending = true;
++		void this._ctx.instance.sendText('\x15', false);
 +	}
 +
 +	private _revealSelectedBlock(): void {
@@ -1140,12 +1209,9 @@ index 00000000..8b03298a
 +		const path = sendPathFor(this._state, text);
 +		switch (path.kind) {
 +			case 'runCommand':
++				this._sentByInput = true;
 +				void this._ctx.instance.runCommand(path.text, true, undefined, path.bracketed);
 +				input?.history.push(path.text);
-+				input?.clear();
-+				break;
-+			case 'sendText':
-+				void this._ctx.instance.sendText(path.text, true);
 +				input?.clear();
 +				break;
 +			case 'none':
@@ -1153,16 +1219,25 @@ index 00000000..8b03298a
 +		}
 +	}
 +
++	/** Ctrl+C in the input clears it; while a command runs, Ctrl+C reaches the program through xterm. */
 +	interrupt(): void {
-+		if (this._state === InputState.Executing) {
-+			void this._ctx.instance.sendText('\x03', false);
-+		} else {
-+			this._input.value?.clear();
-+		}
++		this._input.value?.clear();
 +	}
 +
 +	clearTerminal(): void {
 +		void this._commandService.executeCommand('workbench.action.terminal.clear');
++	}
++
++	scrollPages(n: number): void {
++		this._xterm?.raw.scrollPages(n);
++	}
++
++	scrollToEdge(top: boolean): void {
++		if (top) {
++			this._xterm?.raw.scrollToTop();
++		} else {
++			this._xterm?.raw.scrollToBottom();
++		}
 +	}
 +
 +	selectBlock(direction: 'previous' | 'next' | 'clear'): void {
@@ -1203,28 +1278,28 @@ index 00000000..8b03298a
 +		}
 +	}
 +
-+	sendToAgent(block: IBlock): void {
-+		if (!CommandsRegistry.getCommand(AgentSendBlockCommandId)) {
++	async sendToAgent(block: IBlock): Promise<void> {
++		try {
++			await this._commandService.executeCommand(AgentSendBlockCommandId, {
++				command: block.commandLine,
++				output: block.command?.getOutput() ?? '',
++				exitCode: block.exitCode,
++				cwd: block.command?.cwd,
++				shellType: this._ctx.instance.shellType,
++			});
++		} catch {
 +			this._notificationService.info(localize('onyx.blocks.noAgent', "Agent API not installed yet"));
-+			return;
 +		}
-+		void this._commandService.executeCommand(AgentSendBlockCommandId, {
-+			command: block.commandLine,
-+			output: block.command?.getOutput() ?? '',
-+			exitCode: block.exitCode,
-+			cwd: block.command?.cwd,
-+			shellType: this._ctx.instance.shellType,
-+		});
 +	}
 +
 +	// #endregion
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts
 new file mode 100644
-index 00000000..d176ce86
+index 00000000..4a575fd7
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,18 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1233,11 +1308,15 @@ index 00000000..d176ce86
 +	settingEnabled: boolean;
 +	hasCommandDetection: boolean;
 +	xtermOpened: boolean;
++	screenReaderOptimized: boolean;
 +}
 +
-+/** Blocks exist only with the setting on, shell integration detected, and xterm in the DOM. */
++/**
++ * Blocks exist only with the setting on, shell integration detected, xterm in the DOM, and no
++ * screen reader (the stock terminal's accessible buffer serves screen reader users).
++ */
 +export function shouldEnableBlocks(input: IEnablementInput): boolean {
-+	return input.settingEnabled && input.hasCommandDetection && input.xtermOpened;
++	return input.settingEnabled && input.hasCommandDetection && input.xtermOpened && !input.screenReaderOptimized;
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputHistory.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputHistory.ts
 new file mode 100644
@@ -1318,10 +1397,10 @@ index 00000000..8b5e7d81
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts
 new file mode 100644
-index 00000000..8e2a62da
+index 00000000..cf80fb9a
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,39 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1329,7 +1408,7 @@ index 00000000..8e2a62da
 +export const enum InputState {
 +	/** Shell is at a prompt: Enter runs the text as one command. */
 +	Prompt = 'prompt',
-+	/** A foreground command is running: Enter forwards the text to it. */
++	/** A foreground command is running: xterm has the keyboard, the input is dimmed and sends nothing. */
 +	Executing = 'executing',
 +	/** A full-screen program owns the terminal: the input is hidden. */
 +	AltBuffer = 'altBuffer',
@@ -1352,29 +1431,21 @@ index 00000000..8e2a62da
 +
 +export type SendPath =
 +	| { kind: 'runCommand'; text: string; bracketed: boolean }
-+	| { kind: 'sendText'; text: string }
 +	| { kind: 'none' };
 +
 +export function sendPathFor(state: InputState, rawText: string): SendPath {
 +	const text = rawText.replace(/\s+$/, '');
-+	if (text.length === 0) {
++	if (text.length === 0 || state !== InputState.Prompt) {
 +		return { kind: 'none' };
 +	}
-+	switch (state) {
-+		case InputState.Prompt:
-+			return { kind: 'runCommand', text, bracketed: text.includes('\n') };
-+		case InputState.Executing:
-+			return { kind: 'sendText', text };
-+		default:
-+			return { kind: 'none' };
-+	}
++	return { kind: 'runCommand', text, bracketed: text.includes('\n') };
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
 new file mode 100644
-index 00000000..bcb9521a
+index 00000000..20038b6f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,245 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1390,10 +1461,13 @@ index 00000000..bcb9521a
 +import { ICodeEditorService } from '../../../../../editor/browser/services/codeEditorService.js';
 +import { EditorContextKeys } from '../../../../../editor/common/editorContextKeys.js';
 +import { Context as SuggestContext } from '../../../../../editor/contrib/suggest/browser/suggest.js';
++import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 +import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
 +import type { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 +import { KeybindingsRegistry, KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
++import { TerminalCommandId } from '../../../terminal/common/terminal.js';
 +import { TerminalContextKeys } from '../../../terminal/common/terminalContextKey.js';
++import { TerminalHistoryCommandId } from '../../history/common/terminal.history.js';
 +import { OnyxBlockInput, OnyxBlocksContextKeys } from './onyxBlockInput.js';
 +
 +// #region Configuration
@@ -1540,7 +1614,8 @@ index 00000000..bcb9521a
 +	id: 'onyx.blocks.copyTerminalSelection',
 +	weight: weight + 1,
 +	when: ContextKeyExpr.and(inputFocused, TerminalContextKeys.textSelected, EditorContextKeys.hasNonEmptySelection.negate()),
-+	primary: KeyMod.CtrlCmd | KeyCode.KeyC,
++	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyC,
++	mac: { primary: KeyMod.CtrlCmd | KeyCode.KeyC },
 +	handler: accessor => withInput(accessor, input => input.controller.copyTerminalSelection()),
 +});
 +
@@ -1550,6 +1625,69 @@ index 00000000..bcb9521a
 +	when: inputFocused,
 +	primary: KeyMod.CtrlCmd | KeyCode.KeyF,
 +	handler: accessor => withInput(accessor, input => input.controller.focusFind()),
++});
++
++// Terminal shortcuts that upstream binds on terminalFocus, which is false while the input has focus.
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.clearTerminalMac',
++	weight,
++	when: inputFocused,
++	primary: 0,
++	mac: { primary: KeyMod.CtrlCmd | KeyCode.KeyK },
++	handler: accessor => withInput(accessor, input => input.controller.clearTerminal()),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.runRecentCommand',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.KeyR,
++	mac: { primary: KeyMod.WinCtrl | KeyCode.KeyR },
++	handler: accessor => withInput(accessor, () => accessor.get(ICommandService).executeCommand(TerminalHistoryCommandId.RunRecentCommand)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.scrollPageUp',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.PageUp,
++	secondary: [KeyMod.Shift | KeyCode.PageUp],
++	handler: accessor => withInput(accessor, input => input.controller.scrollPages(-1)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.scrollPageDown',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.PageDown,
++	secondary: [KeyMod.Shift | KeyCode.PageDown],
++	handler: accessor => withInput(accessor, input => input.controller.scrollPages(1)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.scrollToTop',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.Home,
++	handler: accessor => withInput(accessor, input => input.controller.scrollToEdge(true)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.scrollToBottom',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.End,
++	handler: accessor => withInput(accessor, input => input.controller.scrollToEdge(false)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.split',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.Digit5,
++	mac: { primary: KeyMod.CtrlCmd | KeyCode.Backslash },
++	handler: accessor => withInput(accessor, () => accessor.get(ICommandService).executeCommand(TerminalCommandId.Split)),
 +});
 +
 +// #endregion
@@ -1792,10 +1930,10 @@ index 00000000..e7f6fb66
 +});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
 new file mode 100644
-index 00000000..0dbe623a
+index 00000000..3a73444f
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,31 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1808,19 +1946,23 @@ index 00000000..0dbe623a
 +	ensureNoDisposablesAreLeakedInTestSuite();
 +
 +	test('enabled when setting on, command detection present and xterm open', () => {
-+		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: true }), true);
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: true, screenReaderOptimized: false }), true);
 +	});
 +
 +	test('disabled when the setting is off', () => {
-+		strictEqual(shouldEnableBlocks({ settingEnabled: false, hasCommandDetection: true, xtermOpened: true }), false);
++		strictEqual(shouldEnableBlocks({ settingEnabled: false, hasCommandDetection: true, xtermOpened: true, screenReaderOptimized: false }), false);
 +	});
 +
 +	test('disabled without shell integration (no command detection)', () => {
-+		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: false, xtermOpened: true }), false);
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: false, xtermOpened: true, screenReaderOptimized: false }), false);
 +	});
 +
 +	test('disabled before xterm is in the DOM', () => {
-+		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: false }), false);
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: false, screenReaderOptimized: false }), false);
++	});
++
++	test('disabled when a screen reader is in use', () => {
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: true, screenReaderOptimized: true }), false);
 +	});
 +});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputHistory.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputHistory.test.ts
@@ -1897,10 +2039,10 @@ index 00000000..37a9c2fc
 +});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts
 new file mode 100644
-index 00000000..7b415f87
+index 00000000..14d166ef
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,50 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1942,8 +2084,9 @@ index 00000000..7b415f87
 +		deepStrictEqual(sendPathFor(InputState.Executing, ''), { kind: 'none' });
 +	});
 +
-+	test('executing: text is forwarded raw to the program', () => {
-+		deepStrictEqual(sendPathFor(InputState.Executing, 'yes'), { kind: 'sendText', text: 'yes' });
++	test('executing: never sends (the program reads keys from xterm)', () => {
++		deepStrictEqual(sendPathFor(InputState.Executing, 'yes'), { kind: 'none' });
++		deepStrictEqual(sendPathFor(InputState.Executing, 'echo hi\nexit'), { kind: 'none' });
 +	});
 +
 +	test('alt buffer: never sends', () => {

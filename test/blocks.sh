@@ -30,7 +30,10 @@ if [[ -d vscode/.git ]]; then
       exit 1
     fi
     git apply --check --cached --ignore-whitespace "../$P"
-    git apply --check --reverse --ignore-whitespace "../$P"
+    if ! git apply --check --reverse --ignore-whitespace "../$P"; then
+      echo "blocks.sh: vscode/ does not have the patch applied; run just prepare" >&2
+      exit 1
+    fi
   )
 fi
 

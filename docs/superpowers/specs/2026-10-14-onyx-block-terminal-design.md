@@ -72,8 +72,8 @@ terminal is stock VS Code.
     widget is open: previous / next history entry. Typing resets the history
     cursor.
   - Tab, Ctrl+Space: trigger suggest.
-  - Ctrl+C: interrupt (send `\x03`) if a command is running, else clear the
-    input.
+  - Ctrl+C: clear the input (while a command runs, Ctrl+C goes to the
+    program through xterm).
   - Ctrl+L: clear the terminal (upstream's `workbench.action.terminal.clear`).
   - Cmd+Up / Cmd+Down (Ctrl on Linux and Windows): select the previous /
     next block. Escape: clear the block selection; if none, no-op.
@@ -96,17 +96,20 @@ what Enter does:
 | State | Signal | Enter does |
 | --- | --- | --- |
 | Prompt | `promptInputModel.state === Input` and no alt buffer | `instance.runCommand(text, shouldExecute=true, undefined, forceBracketedPaste=text has newline)` |
-| Executing | a command started and not finished, no alt buffer | `instance.sendText(text, shouldExecute=true)` (raw, reaches the program) |
+| Executing | a command started and not finished, no alt buffer | xterm has the keyboard; the input stays visible but dimmed and inactive, and focus returns to it when the shell is back at a prompt (Warp behaviour). Passwords, REPLs, pickers, Ctrl+D and Tab reach the program. |
 | AltBuffer | xterm `buffer.active.type === 'alternate'` | input hidden; xterm has keyboard |
 
 Transitions re-run on `onCommandStarted`, `onCommandFinished`,
 `onCommandInvalidated`, `promptInputModel.onDidChangeInput` and xterm's
 `buffer.onBufferChange`. Entering AltBuffer hides the input and removes the
-padding; leaving it restores both and refocuses the input.
+padding; leaving it restores both and refocuses the input. Entering Executing
+focuses xterm (when the terminal has focus) and dims the input without
+changing its height; leaving Executing for Prompt refocuses the input. The
+focus redirect below applies only in Prompt.
 
 ### Focus
 
-- When the terminal instance gains focus and the state is not AltBuffer, focus
+- When the terminal instance gains focus and the state is Prompt, focus
   goes to the input editor, not xterm's helper textarea. Implemented by
   listening to focus on the xterm textarea and redirecting; no upstream edit.
 - Mouse selection in the output area works as before. Keyboard shortcuts
@@ -200,7 +203,10 @@ No other settings in v1. Input height limit and colours are constants.
   hides the input and `:q` restores it; `read x` then typing a value and
   Enter reaches `read`; Ctrl+C interrupts `sleep 30`; Up recalls `ls`; Tab
   completes a path; Cmd+Up selects the last block; hover toolbar copies and
-  re-runs; Send to agent shows the notice; setting off gives stock terminal.
+  re-runs; Send to agent shows the notice; setting off gives stock terminal; a `read`
+  prompt accepts an empty Enter; `python3` exits with Ctrl+D; `sudo -v` does
+  not echo the password; dragging a file onto the terminal lands its path in
+  the input; Ctrl+R opens recent commands; Cmd+K clears; Shift+PageUp scrolls.
 
 ## Upstream tracking
 
