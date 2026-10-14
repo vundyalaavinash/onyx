@@ -266,10 +266,10 @@ index 00000000..4d5790e8
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
 new file mode 100644
-index 00000000..0fd6c8f3
+index 00000000..7f1a9d2e
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,184 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -352,6 +352,17 @@ index 00000000..0fd6c8f3
 +		this._listeners.add(capability.onCommandInvalidated(() => this.refresh()));
 +		this._listeners.add(capability.onCurrentCommandInvalidated(() => this.refresh()));
 +		this.refresh();
++	}
++
++	/** Drops every listener and block; the model is empty until the next `attach`. */
++	detach(): void {
++		this._listeners.clear();
++		this._markerListeners.clear();
++		this._capability = undefined;
++		this._blocks = [];
++		this._runningId = undefined;
++		this._selectedId = undefined;
++		this._onDidChange.fire();
 +	}
 +
 +	refresh(): void {
@@ -445,10 +456,10 @@ index 00000000..0fd6c8f3
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..319f5508
+index 00000000..2e37842e
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,360 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -583,15 +594,30 @@ index 00000000..319f5508
 +		if (cwdCap) {
 +			this._enabledParts.add(cwdCap.onDidChangeCwd(() => this._updateHeader(input, capability)));
 +		}
++		// With shell integration CwdDetection usually arrives just after CommandDetection.
++		this._enabledParts.add(this._ctx.instance.capabilities.onDidAddCapability(e => {
++			if (e.id === TerminalCapability.CwdDetection) {
++				this._enabledParts.add(e.capability.onDidChangeCwd(() => this._updateHeader(input, capability)));
++				this._updateHeader(input, capability);
++			}
++		}));
 +		this._enabledParts.add(capability.onCommandFinished(() => this._updateHeader(input, capability)));
 +
 +		// State: prompt / executing / alt buffer.
 +		const update = () => this._updateInputState(capability);
 +		this._enabledParts.add(capability.onCommandStarted(update));
 +		this._enabledParts.add(capability.onCommandExecuted(update));
-+		this._enabledParts.add(capability.onCommandFinished(update));
++		// Upstream fires onCommandFinished before it resets executingCommand, so read the state after it.
++		this._enabledParts.add(capability.onCommandFinished(() => queueMicrotask(() => {
++			if (this._isEnabled && !this._store.isDisposed) {
++				update();
++			}
++		})));
 +		this._enabledParts.add(capability.onCurrentCommandInvalidated(update));
++		this._enabledParts.add(capability.promptInputModel.onDidStartInput(update));
 +		this._enabledParts.add(capability.promptInputModel.onDidChangeInput(update));
++		this._enabledParts.add(capability.promptInputModel.onDidFinishInput(update));
++		this._enabledParts.add(capability.promptInputModel.onDidInterrupt(update));
 +		this._enabledParts.add(xterm.raw.buffer.onBufferChange(update));
 +		update();
 +
@@ -618,8 +644,10 @@ index 00000000..319f5508
 +
 +	private _disable(): void {
 +		this._isEnabled = false;
++		this._state = InputState.Prompt;
 +		this._enabledParts.clear();
 +		this._input.clear();
++		this.model.detach();
 +		const wrapper = this._ctx.instance.domElement;
 +		if (wrapper) {
 +			wrapper.classList.remove('onyx-blocks');
@@ -649,6 +677,9 @@ index 00000000..319f5508
 +		this._relayoutQueued = true;
 +		queueMicrotask(() => {
 +			this._relayoutQueued = false;
++			if (this._store.isDisposed) {
++				return;
++			}
 +			if (this._lastDimension) {
 +				this._ctx.instance.layout(this._lastDimension);
 +			}
@@ -1002,10 +1033,10 @@ index 00000000..8c034435
 +};
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
 new file mode 100644
-index 00000000..b8bc6eee
+index 00000000..a63d591d
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,195 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1186,6 +1217,19 @@ index 00000000..b8bc6eee
 +		strictEqual(fired, 1);
 +		cap.onCommandExecuted.fire(cap.commands[0]);
 +		strictEqual(fired, 2);
++	});
++
++	test('detach empties the model and ignores later capability events', () => {
++		cap.commands.push(command('a', 0, 1));
++		model.attach(cap.asCapability());
++		model.select(model.blocks[0].id);
++		model.detach();
++		strictEqual(model.blocks.length, 0);
++		strictEqual(model.selectedId, undefined);
++		cap.commands.push(command('b', 2, 3));
++		cap.onCommandFinished.fire(cap.commands[1]);
++		cap.onCommandStarted.fire({ marker: marker(4) } as unknown as ITerminalCommand);
++		strictEqual(model.blocks.length, 0);
 +	});
 +});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
