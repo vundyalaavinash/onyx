@@ -37,22 +37,29 @@ if [[ $( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" 2>&1
 
     gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --title "${RELEASE_VERSION}" --notes-file release_notes.md
   else
-    gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --title "${RELEASE_VERSION}" --generate-notes
+    if gh release create "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --title "${RELEASE_VERSION}" --generate-notes; then
+      CREATED_RELEASE=yes
+    else
+      echo "release create failed; checking whether a sibling job created it"
+      gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" > /dev/null
+    fi
 
-    RELEASE_NOTES=$( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --json "body" --jq ".body" )
+    if [[ "${CREATED_RELEASE}" == "yes" ]]; then
+      RELEASE_NOTES=$( gh release view "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --json "body" --jq ".body" )
 
-    replace "s|@@APP_NAME@@|${APP_NAME}|g" release_notes.md
-    replace "s|@@APP_NAME_LC@@|${APP_NAME_LC}|g" release_notes.md
-    replace "s|@@APP_NAME_QUALITY@@|${APP_NAME}|g" release_notes.md
-    replace "s|@@ASSETS_REPOSITORY@@|${ASSETS_REPOSITORY}|g" release_notes.md
-    replace "s|@@BINARY_NAME@@|${BINARY_NAME}|g" release_notes.md
-    replace "s|@@MS_TAG@@|${MS_TAG}|g" release_notes.md
-    replace "s|@@MS_URL@@|https://code.visualstudio.com/updates/v$( echo "${MS_TAG//./_}" | cut -d'_' -f 1,2 )|g" release_notes.md
-    replace "s|@@QUALITY@@||g" release_notes.md
-    replace "s|@@RELEASE_NOTES@@|${RELEASE_NOTES//$'\n'/\\n}|g" release_notes.md
-    replace "s|@@VERSION@@|${VERSION}|g" release_notes.md
+      replace "s|@@APP_NAME@@|${APP_NAME}|g" release_notes.md
+      replace "s|@@APP_NAME_LC@@|${APP_NAME_LC}|g" release_notes.md
+      replace "s|@@APP_NAME_QUALITY@@|${APP_NAME}|g" release_notes.md
+      replace "s|@@ASSETS_REPOSITORY@@|${ASSETS_REPOSITORY}|g" release_notes.md
+      replace "s|@@BINARY_NAME@@|${BINARY_NAME}|g" release_notes.md
+      replace "s|@@MS_TAG@@|${MS_TAG}|g" release_notes.md
+      replace "s|@@MS_URL@@|https://code.visualstudio.com/updates/v$( echo "${MS_TAG//./_}" | cut -d'_' -f 1,2 )|g" release_notes.md
+      replace "s|@@QUALITY@@||g" release_notes.md
+      replace "s|@@RELEASE_NOTES@@|${RELEASE_NOTES//$'\n'/\\n}|g" release_notes.md
+      replace "s|@@VERSION@@|${VERSION}|g" release_notes.md
 
-    gh release edit "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --notes-file release_notes.md
+      gh release edit "${RELEASE_VERSION}" --repo "${ASSETS_REPOSITORY}" --notes-file release_notes.md
+    fi
   fi
 fi
 
