@@ -9,10 +9,10 @@ index 8b880c7f..d1a74774 100644
 +import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
 new file mode 100644
-index 00000000..34c75563
+index 00000000..0e149418
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,135 @@
 +/* Onyx block terminal */
 +
 +.monaco-workbench .terminal-wrapper.onyx-blocks {
@@ -122,6 +122,11 @@ index 00000000..34c75563
 +	padding: 1px;
 +}
 +
++.onyx-blocks-overlay .onyx-block-toolbar.bottom {
++	top: auto;
++	bottom: 2px;
++}
++
 +.onyx-blocks-overlay .onyx-block.hover .onyx-block-toolbar,
 +.onyx-blocks-overlay .onyx-block.selected .onyx-block-toolbar {
 +	display: flex;
@@ -224,10 +229,10 @@ index 00000000..c4def177
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
 new file mode 100644
-index 00000000..4d5790e8
+index 00000000..b6148d62
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,200 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -359,6 +364,12 @@ index 00000000..4d5790e8
 +			}
 +			this._relayout();
 +		}));
++		// Wrapped lines change the content height without changing the line count.
++		this._register(this.editor.onDidContentSizeChange(e => {
++			if (e.contentHeightChanged) {
++				this._relayout();
++			}
++		}));
 +		this._relayout();
 +	}
 +
@@ -395,19 +406,24 @@ index 00000000..4d5790e8
 +		this._relayout();
 +	}
 +
-+	/** True when the cursor sits on the first line (for Up history). */
++	/**
++	 * True when the cursor sits on the first visual row, wrapped rows included (for Up history).
++	 * Uses the cursor's view position: at a wrap point the model position is ambiguous and
++	 * `getTopForPosition` reports the next row while the cursor is drawn at the end of this one.
++	 */
 +	cursorOnFirstLine(): boolean {
-+		return (this.editor.getPosition()?.lineNumber ?? 1) === 1;
++		const viewModel = this.editor._getViewModel();
++		return !viewModel || viewModel.getPrimaryCursorState().viewState.position.lineNumber === 1;
 +	}
 +
-+	/** True when the cursor sits on the last line (for Down history). */
++	/** True when the cursor sits on the last visual row, wrapped rows included (for Down history). */
 +	cursorOnLastLine(): boolean {
-+		return (this.editor.getPosition()?.lineNumber ?? 1) === this._model.getLineCount();
++		const viewModel = this.editor._getViewModel();
++		return !viewModel || viewModel.getPrimaryCursorState().viewState.position.lineNumber === viewModel.getLineCount();
 +	}
 +
 +	private _relayout(): void {
-+		const lines = Math.min(Math.max(this._model.getLineCount(), 1), MaxInputLines);
-+		const editorHeight = lines * this._lineHeight;
++		const editorHeight = Math.min(Math.max(this.editor.getContentHeight(), this._lineHeight), MaxInputLines * this._lineHeight);
 +		const editorWidth = Math.max(this._width - this._editorHost.offsetLeft, 0);
 +		this.editor.layout({ width: editorWidth, height: editorHeight });
 +		const total = HeaderHeight + editorHeight + 1 /* top border */;
@@ -419,10 +435,10 @@ index 00000000..4d5790e8
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
 new file mode 100644
-index 00000000..7f1a9d2e
+index 00000000..b22f622a
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,185 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -533,7 +549,8 @@ index 00000000..7f1a9d2e
 +				this._ids.set(c, id);
 +			}
 +			const b = new Block(id, c, undefined);
-+			if (b.startLine !== undefined) {
++			// A finished command with no text is a prompt redraw (re-enable, resize), not a block.
++			if (b.startLine !== undefined && b.commandLine.trim().length > 0) {
 +				next.push(b);
 +			}
 +		}
@@ -609,10 +626,10 @@ index 00000000..7f1a9d2e
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts
 new file mode 100644
-index 00000000..68247d51
+index 00000000..1ba918e6
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockOverlay.ts
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,200 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -640,11 +657,6 @@ index 00000000..68247d51
 +	toolbar: HTMLElement;
 +}
 +
-+/** Finished blocks with an empty command line are prompt redraws (re-enable, resize) and get no band. */
-+function isDrawn(block: IBlock): boolean {
-+	return block.isRunning || block.commandLine.trim().length > 0;
-+}
-+
 +/**
 + * Draws one translucent band per block over the xterm screen, positioned from the block's
 + * marker lines. Pointer events pass through to xterm except on the hover toolbar; hover and
@@ -670,12 +682,13 @@ index 00000000..68247d51
 +		this._listeners.add(_xterm.raw.onScroll(() => this.refresh()));
 +		this._listeners.add(_xterm.raw.onResize(() => this.refresh()));
 +		this._listeners.add(_xterm.raw.onWriteParsed(() => this.refresh()));
++		this._listeners.add(_xterm.raw.buffer.onBufferChange(() => this.refresh()));
 +		this._listeners.add(_model.onDidChange(() => this.refresh()));
 +
 +		this._listeners.add(dom.addDisposableListener(host, 'mousemove', e => this._setHovered(this._blockAtEvent(e)?.id)));
 +		this._listeners.add(dom.addDisposableListener(host, 'mouseleave', () => this._setHovered(undefined)));
 +		this._listeners.add(dom.addDisposableListener(host, 'mousedown', e => {
-+			if (e.button !== 0 || (e.target as HTMLElement).closest('.onyx-block-toolbar')) {
++			if (e.button !== 0 || this._isAltBuffer() || (e.target as HTMLElement).closest('.onyx-block-toolbar')) {
 +				return;
 +			}
 +			const block = this._blockAtEvent(e);
@@ -705,10 +718,15 @@ index 00000000..68247d51
 +		return this._xterm.raw.element?.querySelector<HTMLElement>('.xterm-screen') ?? null;
 +	}
 +
++	/** A full-screen program owns the screen; stored normal-buffer lines must not be drawn or hit. */
++	private _isAltBuffer(): boolean {
++		return this._xterm.raw.buffer.active.type === 'alternate';
++	}
++
 +	private _blockAtEvent(e: MouseEvent): IBlock | undefined {
 +		const rowHeight = this._rowHeight();
 +		const screen = this._screen();
-+		if (!rowHeight || !screen) {
++		if (!rowHeight || !screen || this._isAltBuffer()) {
 +			return undefined;
 +		}
 +		const rect = screen.getBoundingClientRect();
@@ -719,7 +737,7 @@ index 00000000..68247d51
 +		const line = this._xterm.raw.buffer.active.viewportY + row;
 +		return this._model.blocks.find(b => {
 +			const start = b.startLine;
-+			return isDrawn(b) && start !== undefined && line >= start && line <= this._lastLine(b, start);
++			return start !== undefined && line >= start && line <= this._lastLine(b, start);
 +		});
 +	}
 +
@@ -743,9 +761,11 @@ index 00000000..68247d51
 +	}
 +
 +	private _render(): void {
++		const alt = this._isAltBuffer();
++		this._element.style.display = alt ? 'none' : '';
 +		const rowHeight = this._rowHeight();
 +		const screen = this._screen();
-+		if (!rowHeight || !screen) {
++		if (alt || !rowHeight || !screen) {
 +			return;
 +		}
 +		this._element.style.top = `${screen.offsetTop}px`;
@@ -757,19 +777,18 @@ index 00000000..68247d51
 +		const viewportY = this._xterm.raw.buffer.active.viewportY;
 +		const rows = this._xterm.raw.rows;
 +		const seen = new Set<number>();
-+		let drawn = 0;
-+		for (const block of this._model.blocks) {
++		this._model.blocks.forEach((block, index) => {
 +			const start = block.startLine;
-+			if (start === undefined || !isDrawn(block)) {
-+				continue;
++			if (start === undefined) {
++				return;
 +			}
-+			// The shade alternates by position among drawn blocks, including those scrolled out of view.
-+			const odd = drawn++ % 2 === 1;
++			// The shade alternates by position in the model, so scrolling never flips it.
++			const odd = index % 2 === 1;
 +			const end = this._lastLine(block, start);
 +			const topRow = start - viewportY;
 +			const bottomRow = end - viewportY;
 +			if (bottomRow < 0 || topRow >= rows) {
-+				continue;
++				return;
 +			}
 +			seen.add(block.id);
 +			const el = this._elements.get(block.id) ?? this._createElement(block);
@@ -782,7 +801,9 @@ index 00000000..68247d51
 +			el.root.classList.toggle('running', block.isRunning);
 +			el.root.classList.toggle('hover', block.id === this._hoveredId);
 +			el.toolbar.style.display = block.isRunning ? 'none' : '';
-+		}
++			// With the block's start scrolled off, sticky scroll covers the top row; use the bottom corner.
++			el.toolbar.classList.toggle('bottom', topRow < 0);
++		});
 +		for (const [id, el] of this._elements) {
 +			if (!seen.has(id)) {
 +				el.root.remove();
@@ -811,10 +832,10 @@ index 00000000..68247d51
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..c8d41973
+index 00000000..8b03298a
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,384 @@
+@@ -0,0 +1,383 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -952,7 +973,6 @@ index 00000000..c8d41973
 +		this._enabledParts.add(capability.onCommandFinished(c => { if (c.command) { input.history.push(c.command); } }));
 +
 +		this._enabledParts.add(new OnyxBlockOverlay(xterm, this.model, this));
-+		this._enabledParts.add(this.model.onDidChange(() => this._revealSelectedBlock()));
 +
 +		// Working directory header.
 +		this._updateHeader(input, capability);
@@ -1147,8 +1167,8 @@ index 00000000..c8d41973
 +
 +	selectBlock(direction: 'previous' | 'next' | 'clear'): void {
 +		switch (direction) {
-+			case 'previous': this.model.selectPrevious(); break;
-+			case 'next': this.model.selectNext(); break;
++			case 'previous': this.model.selectPrevious(); this._revealSelectedBlock(); break;
++			case 'next': this.model.selectNext(); this._revealSelectedBlock(); break;
 +			case 'clear': this.model.select(undefined); break;
 +		}
 +	}
@@ -1561,10 +1581,10 @@ index 00000000..8c034435
 +};
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
 new file mode 100644
-index 00000000..a63d591d
+index 00000000..e7f6fb66
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,205 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1758,6 +1778,16 @@ index 00000000..a63d591d
 +		cap.onCommandFinished.fire(cap.commands[1]);
 +		cap.onCommandStarted.fire({ marker: marker(4) } as unknown as ITerminalCommand);
 +		strictEqual(model.blocks.length, 0);
++	});
++
++	test('finished commands with empty text are not blocks and selection skips them', () => {
++		cap.commands.push(command('ls', 0, 3), command('', 3, 4), command('  ', 4, 5), command('pwd', 5, 7));
++		model.attach(cap.asCapability());
++		deepStrictEqual(model.blocks.map(b => b.commandLine), ['ls', 'pwd']);
++		model.selectPrevious();
++		strictEqual(model.selectedBlock?.commandLine, 'pwd');
++		model.selectPrevious();
++		strictEqual(model.selectedBlock?.commandLine, 'ls');
 +	});
 +});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
