@@ -23,6 +23,175 @@ index 00000000..a71ce205
 +.monaco-workbench .terminal-wrapper.onyx-blocks .xterm {
 +	padding-bottom: var(--onyx-block-input-height, 0px);
 +}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
+new file mode 100644
+index 00000000..688b6655
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
+@@ -0,0 +1,163 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { IMarker } from '@xterm/xterm';
++import { Emitter } from '../../../../../base/common/event.js';
++import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
++import type { ICommandDetectionCapability, ITerminalCommand } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
++import type { ICurrentPartialCommand } from '../../../../../platform/terminal/common/capabilities/commandDetection/terminalCommand.js';
++
++export interface IBlock {
++	readonly id: number;
++	/** Set for finished commands. */
++	readonly command: ITerminalCommand | undefined;
++	/** Set for the running command. */
++	readonly partial: ICurrentPartialCommand | undefined;
++	readonly commandLine: string;
++	/** Absolute buffer line of the prompt (or command start). Undefined once the marker is gone. */
++	readonly startLine: number | undefined;
++	/** Absolute buffer line of the command end. Undefined while running or once the marker is gone. */
++	readonly endLine: number | undefined;
++	readonly exitCode: number | undefined;
++	readonly isRunning: boolean;
++}
++
++function liveLine(m: IMarker | undefined): number | undefined {
++	return m && !m.isDisposed ? m.line : undefined;
++}
++
++class Block implements IBlock {
++	constructor(
++		readonly id: number,
++		readonly command: ITerminalCommand | undefined,
++		readonly partial: ICurrentPartialCommand | undefined,
++	) { }
++	get commandLine(): string { return this.command?.command ?? this.partial?.command ?? ''; }
++	get startLine(): number | undefined {
++		return liveLine(this.command?.promptStartMarker ?? this.partial?.promptStartMarker)
++			?? liveLine(this.command?.marker ?? this.partial?.commandStartMarker);
++	}
++	get endLine(): number | undefined { return liveLine(this.command?.endMarker); }
++	get exitCode(): number | undefined { return this.command?.exitCode; }
++	get isRunning(): boolean { return this.command === undefined; }
++	get startMarker(): IMarker | undefined {
++		return this.command?.promptStartMarker ?? this.command?.marker ?? this.partial?.promptStartMarker ?? this.partial?.commandStartMarker;
++	}
++}
++
++/**
++ * Turns command detection into a list of blocks. The list is rebuilt from the capability on every
++ * event; ids are kept stable per command object, and the running block keeps its id when the
++ * command finishes. ponytail: O(n) rebuild per event, fine for a few thousand commands.
++ */
++export class BlockModel extends Disposable {
++	private _capability: ICommandDetectionCapability | undefined;
++	private _blocks: Block[] = [];
++	private _selectedId: number | undefined;
++	private _nextId = 1;
++	private _runningId: number | undefined;
++	private readonly _ids = new WeakMap<ITerminalCommand, number>();
++	private readonly _listeners = this._register(new DisposableStore());
++	private readonly _markerListeners = this._register(new DisposableStore());
++	private readonly _onDidChange = this._register(new Emitter<void>());
++	readonly onDidChange = this._onDidChange.event;
++
++	get blocks(): readonly IBlock[] { return this._blocks; }
++	get selectedId(): number | undefined { return this._selectedId; }
++	get selectedBlock(): IBlock | undefined { return this._blocks.find(b => b.id === this._selectedId); }
++
++	attach(capability: ICommandDetectionCapability): void {
++		this._capability = capability;
++		this._listeners.clear();
++		this._listeners.add(capability.onCommandStarted(() => this.refresh()));
++		this._listeners.add(capability.onCommandExecuted(() => this.refresh()));
++		this._listeners.add(capability.onCommandFinished(() => this.refresh()));
++		this._listeners.add(capability.onCommandInvalidated(() => this.refresh()));
++		this._listeners.add(capability.onCurrentCommandInvalidated(() => this.refresh()));
++		this.refresh();
++	}
++
++	refresh(): void {
++		const cap = this._capability;
++		if (!cap) {
++			return;
++		}
++		const next: Block[] = [];
++		for (const c of cap.commands) {
++			let id = this._ids.get(c);
++			if (id === undefined) {
++				// A command that just finished inherits the running block's id.
++				id = this._runningId ?? this._nextId++;
++				this._runningId = undefined;
++				this._ids.set(c, id);
++			}
++			const b = new Block(id, c, undefined);
++			if (b.startLine !== undefined) {
++				next.push(b);
++			}
++		}
++		const partial = cap.currentCommand;
++		if (partial && (partial.promptStartMarker || partial.commandStartMarker) && !partial.isInvalid && partial.command !== undefined) {
++			if (this._runningId === undefined) {
++				this._runningId = this._nextId++;
++			}
++			const b = new Block(this._runningId, undefined, partial);
++			if (b.startLine !== undefined) {
++				next.push(b);
++			}
++		} else {
++			// No running command: a finished command above may already have taken the id.
++			this._runningId = undefined;
++		}
++		this._blocks = next;
++		this._watchMarkers();
++		if (this._selectedId !== undefined && !this._blocks.some(b => b.id === this._selectedId)) {
++			this._selectedId = undefined;
++		}
++		this._onDidChange.fire();
++	}
++
++	private _watchMarkers(): void {
++		this._markerListeners.clear();
++		for (const b of this._blocks) {
++			const m = b.startMarker;
++			if (m && !m.isDisposed) {
++				this._markerListeners.add(m.onDispose(() => this.refresh()));
++			}
++		}
++	}
++
++	select(id: number | undefined): void {
++		if (id !== undefined && !this._blocks.some(b => b.id === id)) {
++			return;
++		}
++		if (this._selectedId !== id) {
++			this._selectedId = id;
++			this._onDidChange.fire();
++		}
++	}
++
++	/** Older block (towards the top). From no selection, selects the newest block. */
++	selectPrevious(): void {
++		if (this._blocks.length === 0) {
++			return;
++		}
++		const i = this._blocks.findIndex(b => b.id === this._selectedId);
++		const target = i === -1 ? this._blocks.length - 1 : Math.max(0, i - 1);
++		this.select(this._blocks[target].id);
++	}
++
++	/** Newer block (towards the input). Past the newest block the selection clears. */
++	selectNext(): void {
++		const i = this._blocks.findIndex(b => b.id === this._selectedId);
++		if (i === -1) {
++			return;
++		}
++		if (i + 1 >= this._blocks.length) {
++			this.select(undefined);
++		} else {
++			this.select(this._blocks[i + 1].id);
++		}
++	}
++}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
 index 00000000..b69a73fa
@@ -199,6 +368,168 @@ index 00000000..8c034435
 +		scope: ConfigurationScope.WINDOW,
 +	},
 +};
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
+new file mode 100644
+index 00000000..f1d3e942
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
+@@ -0,0 +1,156 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { deepStrictEqual, strictEqual } from 'assert';
++import type { IMarker } from '@xterm/xterm';
++import { Emitter } from '../../../../../../base/common/event.js';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
++import type { ICommandDetectionCapability, ICommandInvalidationRequest, ITerminalCommand } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
++import type { ICurrentPartialCommand } from '../../../../../../platform/terminal/common/capabilities/commandDetection/terminalCommand.js';
++import { BlockModel } from '../../browser/onyxBlockModel.js';
++
++function marker(line: number): IMarker & { dispose(): void } {
++	const onDispose = new Emitter<void>();
++	const m = {
++		id: line, line, isDisposed: false,
++		onDispose: onDispose.event,
++		dispose() { m.isDisposed = true; onDispose.fire(); onDispose.dispose(); },
++	};
++	return m as unknown as IMarker & { dispose(): void };
++}
++
++function command(text: string, start: number, end: number, exitCode: number | undefined = 0): ITerminalCommand {
++	return {
++		command: text, exitCode, promptStartMarker: marker(start), marker: marker(start + 1), endMarker: marker(end),
++		getOutput: () => `${text} output`,
++	} as unknown as ITerminalCommand;
++}
++
++class FakeCapability {
++	readonly commands: ITerminalCommand[] = [];
++	currentCommand: ICurrentPartialCommand | undefined;
++	readonly onCommandStarted = new Emitter<ITerminalCommand>();
++	readonly onCommandExecuted = new Emitter<ITerminalCommand>();
++	readonly onCommandFinished = new Emitter<ITerminalCommand>();
++	readonly onCommandInvalidated = new Emitter<ITerminalCommand[]>();
++	readonly onCurrentCommandInvalidated = new Emitter<ICommandInvalidationRequest>();
++	asCapability(): ICommandDetectionCapability {
++		// Getters so the model always sees the fake's current state, not a snapshot.
++		const self = this;
++		return {
++			get commands() { return self.commands; },
++			get currentCommand() { return self.currentCommand; },
++			onCommandStarted: this.onCommandStarted.event,
++			onCommandExecuted: this.onCommandExecuted.event,
++			onCommandFinished: this.onCommandFinished.event,
++			onCommandInvalidated: this.onCommandInvalidated.event,
++			onCurrentCommandInvalidated: this.onCurrentCommandInvalidated.event,
++		} as unknown as ICommandDetectionCapability;
++	}
++	dispose() {
++		this.onCommandStarted.dispose(); this.onCommandExecuted.dispose(); this.onCommandFinished.dispose();
++		this.onCommandInvalidated.dispose(); this.onCurrentCommandInvalidated.dispose();
++	}
++}
++
++suite('Onyx BlockModel', () => {
++	const store = ensureNoDisposablesAreLeakedInTestSuite();
++	let cap: FakeCapability;
++	let model: BlockModel;
++
++	setup(() => {
++		cap = new FakeCapability();
++		store.add({ dispose: () => cap.dispose() });
++		model = store.add(new BlockModel());
++	});
++
++	test('replays existing commands on attach with marker ranges', () => {
++		cap.commands.push(command('ls', 0, 3), command('pwd', 4, 5, 1));
++		model.attach(cap.asCapability());
++		deepStrictEqual(model.blocks.map(b => [b.commandLine, b.startLine, b.endLine, b.exitCode, b.isRunning]), [
++			['ls', 0, 3, 0, false],
++			['pwd', 4, 5, 1, false],
++		]);
++	});
++
++	test('a running partial command is the last block with no end line', () => {
++		cap.commands.push(command('ls', 0, 3));
++		model.attach(cap.asCapability());
++		cap.currentCommand = { promptStartMarker: marker(4), commandStartMarker: marker(5), command: 'sleep 5' } as unknown as ICurrentPartialCommand;
++		cap.onCommandStarted.fire({ marker: marker(5) } as unknown as ITerminalCommand);
++		const last = model.blocks[model.blocks.length - 1];
++		strictEqual(last.commandLine, 'sleep 5');
++		strictEqual(last.startLine, 4);
++		strictEqual(last.endLine, undefined);
++		strictEqual(last.isRunning, true);
++	});
++
++	test('finished command replaces the running block and keeps a stable id', () => {
++		model.attach(cap.asCapability());
++		cap.currentCommand = { promptStartMarker: marker(0), commandStartMarker: marker(1), command: 'ls' } as unknown as ICurrentPartialCommand;
++		cap.onCommandStarted.fire({ marker: marker(1) } as unknown as ITerminalCommand);
++		const runningId = model.blocks[0].id;
++		const finished = command('ls', 0, 3);
++		cap.commands.push(finished);
++		cap.currentCommand = undefined;
++		cap.onCommandFinished.fire(finished);
++		strictEqual(model.blocks.length, 1);
++		strictEqual(model.blocks[0].isRunning, false);
++		strictEqual(model.blocks[0].id, runningId);
++	});
++
++	test('commands with no markers are skipped', () => {
++		cap.commands.push({ command: 'ghost', exitCode: 0 } as unknown as ITerminalCommand, command('ls', 0, 1));
++		model.attach(cap.asCapability());
++		deepStrictEqual(model.blocks.map(b => b.commandLine), ['ls']);
++	});
++
++	test('disposing a block marker removes the block and clears a selection on it', () => {
++		const c = command('ls', 0, 3);
++		cap.commands.push(c);
++		model.attach(cap.asCapability());
++		model.select(model.blocks[0].id);
++		(c.marker as IMarker & { dispose(): void }).dispose();
++		(c.promptStartMarker as IMarker & { dispose(): void }).dispose();
++		strictEqual(model.blocks.length, 0);
++		strictEqual(model.selectedId, undefined);
++	});
++
++	test('invalidated commands are removed', () => {
++		const a = command('a', 0, 1);
++		const b = command('b', 2, 3);
++		cap.commands.push(a, b);
++		model.attach(cap.asCapability());
++		cap.commands.splice(0, 1);
++		cap.onCommandInvalidated.fire([a]);
++		deepStrictEqual(model.blocks.map(x => x.commandLine), ['b']);
++	});
++
++	test('selection navigation walks newest to oldest and clamps', () => {
++		cap.commands.push(command('a', 0, 1), command('b', 2, 3), command('c', 4, 5));
++		model.attach(cap.asCapability());
++		strictEqual(model.selectedId, undefined);
++		model.selectPrevious();
++		strictEqual(model.selectedBlock?.commandLine, 'c');
++		model.selectPrevious();
++		model.selectPrevious();
++		model.selectPrevious();
++		strictEqual(model.selectedBlock?.commandLine, 'a');
++		model.selectNext();
++		strictEqual(model.selectedBlock?.commandLine, 'b');
++		model.selectNext();
++		model.selectNext();
++		strictEqual(model.selectedId, undefined, 'moving past the newest block clears the selection');
++	});
++
++	test('onDidChange fires once per attach and once per event', () => {
++		let fired = 0;
++		store.add(model.onDidChange(() => fired++));
++		cap.commands.push(command('a', 0, 1));
++		model.attach(cap.asCapability());
++		strictEqual(fired, 1);
++		cap.onCommandExecuted.fire(cap.commands[0]);
++		strictEqual(fired, 2);
++	});
++});
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
 new file mode 100644
 index 00000000..0dbe623a
