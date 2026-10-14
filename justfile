@@ -35,7 +35,12 @@ dev:
     cd vscode && ./scripts/code.sh
 
 test:
-    ./test/syntax.sh && ./test/brand.sh && ./test/product.sh && ./test/icons.sh
+    ./test/syntax.sh && ./test/brand.sh && ./test/product.sh && ./test/icons.sh && ./test/blocks.sh
+
+# Regenerate the one core patch from the vscode/ working tree.
+blocks-patch:
+    cd vscode && git add -N src/vs/workbench/contrib/terminalContrib/onyxBlocks && git diff --no-color -- src/vs/workbench/contrib/terminalContrib/onyxBlocks src/vs/workbench/contrib/terminal/terminal.all.ts > ../patches/onyx-block-terminal.patch
+    cd vscode && git reset -q -- src/vs/workbench/contrib/terminalContrib/onyxBlocks
 
 clean:
     rm -rf vscode VSCode-darwin-* assets

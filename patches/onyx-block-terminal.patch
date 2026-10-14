@@ -1,0 +1,234 @@
+diff --git a/src/vs/workbench/contrib/terminal/terminal.all.ts b/src/vs/workbench/contrib/terminal/terminal.all.ts
+index 8b880c7f..d1a74774 100644
+--- a/src/vs/workbench/contrib/terminal/terminal.all.ts
++++ b/src/vs/workbench/contrib/terminal/terminal.all.ts
+@@ -37,3 +37,4 @@ import '../terminalContrib/suggest/browser/terminal.suggest.contribution.js';
+ import '../terminalContrib/telemetry/browser/terminal.telemetry.contribution.js';
+ import '../terminalContrib/wslRecommendation/browser/terminal.wslRecommendation.contribution.js';
+ import '../terminalContrib/voice/browser/terminal.voice.contribution.js';
++import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
+new file mode 100644
+index 00000000..a71ce205
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
+@@ -0,0 +1,10 @@
++/* Onyx block terminal */
++
++.monaco-workbench .terminal-wrapper.onyx-blocks {
++	position: relative;
++}
++
++/* The input's height is reserved as xterm padding so rows shrink instead of being covered. */
++.monaco-workbench .terminal-wrapper.onyx-blocks .xterm {
++	padding-bottom: var(--onyx-block-input-height, 0px);
++}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
+new file mode 100644
+index 00000000..b69a73fa
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
+@@ -0,0 +1,89 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
++import type { IDimension } from '../../../../../base/browser/dom.js';
++import { Event } from '../../../../../base/common/event.js';
++import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
++import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
++import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
++import type { ITerminalContribution, ITerminalInstance, IXtermTerminal } from '../../../terminal/browser/terminal.js';
++import type { ITerminalContributionContext } from '../../../terminal/browser/terminalExtensions.js';
++import { OnyxBlocksSettingId } from '../common/onyxBlocksConfiguration.js';
++import { shouldEnableBlocks } from './onyxBlocksEnablement.js';
++
++export class OnyxBlocksContribution extends Disposable implements ITerminalContribution {
++	static readonly ID = 'terminal.onyxBlocks';
++
++	static get(instance: ITerminalInstance): OnyxBlocksContribution | null {
++		return instance.getContribution<OnyxBlocksContribution>(OnyxBlocksContribution.ID);
++	}
++
++	private _xterm?: IXtermTerminal & { raw: RawXtermTerminal };
++	private _xtermOpened = false;
++	// Not private: unread until later tasks consume it (noUnusedLocals flags unread private members).
++	protected _lastDimension?: IDimension;
++	private readonly _enabledParts = this._register(new DisposableStore());
++	private _isEnabled = false;
++
++	constructor(
++		private readonly _ctx: ITerminalContributionContext,
++		@IConfigurationService private readonly _configurationService: IConfigurationService,
++	) {
++		super();
++		this._register(Event.runAndSubscribe(this._configurationService.onDidChangeConfiguration, e => {
++			if (!e || e.affectsConfiguration(OnyxBlocksSettingId.Enabled)) {
++				this._refreshState();
++			}
++		}));
++		this._register(this._ctx.instance.capabilities.onDidAddCapability(e => {
++			if (e.id === TerminalCapability.CommandDetection) {
++				this._refreshState();
++			}
++		}));
++		this._register(this._ctx.instance.capabilities.onDidRemoveCapability(e => {
++			if (e.id === TerminalCapability.CommandDetection) {
++				this._refreshState();
++			}
++		}));
++	}
++
++	xtermReady(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
++		this._xterm = xterm;
++		this._refreshState();
++	}
++
++	xtermOpen(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
++		this._xterm = xterm;
++		this._xtermOpened = true;
++		this._refreshState();
++	}
++
++	layout(_xterm: IXtermTerminal & { raw: RawXtermTerminal }, dimension: IDimension): void {
++		this._lastDimension = dimension;
++	}
++
++	private _refreshState(): void {
++		const wanted = shouldEnableBlocks({
++			settingEnabled: this._configurationService.getValue<boolean>(OnyxBlocksSettingId.Enabled) === true,
++			hasCommandDetection: this._ctx.instance.capabilities.has(TerminalCapability.CommandDetection),
++			xtermOpened: this._xtermOpened && !!this._xterm?.raw.element,
++		});
++		if (wanted && !this._isEnabled) {
++			this._enable();
++		} else if (!wanted && this._isEnabled) {
++			this._disable();
++		}
++	}
++
++	private _enable(): void {
++		this._isEnabled = true;
++		// Filled in by later tasks: model, input, overlay.
++	}
++
++	private _disable(): void {
++		this._isEnabled = false;
++		this._enabledParts.clear();
++	}
++}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts
+new file mode 100644
+index 00000000..d176ce86
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts
+@@ -0,0 +1,14 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++export interface IEnablementInput {
++	settingEnabled: boolean;
++	hasCommandDetection: boolean;
++	xtermOpened: boolean;
++}
++
++/** Blocks exist only with the setting on, shell integration detected, and xterm in the DOM. */
++export function shouldEnableBlocks(input: IEnablementInput): boolean {
++	return input.settingEnabled && input.hasCommandDetection && input.xtermOpened;
++}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
+new file mode 100644
+index 00000000..58f21aba
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
+@@ -0,0 +1,29 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import './media/onyxBlocks.css';
++import { localize } from '../../../../../nls.js';
++import { Extensions as ConfigurationExtensions, type IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
++import { Registry } from '../../../../../platform/registry/common/platform.js';
++import { registerTerminalContribution } from '../../../terminal/browser/terminalExtensions.js';
++import { onyxBlocksConfiguration } from '../common/onyxBlocksConfiguration.js';
++import { OnyxBlocksContribution } from './onyxBlocksContribution.js';
++
++// #region Configuration
++
++Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
++	id: 'onyx',
++	order: 100,
++	title: localize('onyxConfigurationTitle', "Onyx"),
++	type: 'object',
++	properties: onyxBlocksConfiguration,
++});
++
++// #endregion
++
++// #region Terminal Contributions
++
++registerTerminalContribution(OnyxBlocksContribution.ID, OnyxBlocksContribution);
++
++// #endregion
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts
+new file mode 100644
+index 00000000..8c034435
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts
+@@ -0,0 +1,20 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { IStringDictionary } from '../../../../../base/common/collections.js';
++import { localize } from '../../../../../nls.js';
++import { ConfigurationScope, type IConfigurationPropertySchema } from '../../../../../platform/configuration/common/configurationRegistry.js';
++
++export const enum OnyxBlocksSettingId {
++	Enabled = 'onyx.terminal.blocks.enabled',
++}
++
++export const onyxBlocksConfiguration: IStringDictionary<IConfigurationPropertySchema> = {
++	[OnyxBlocksSettingId.Enabled]: {
++		markdownDescription: localize('onyx.blocks.enabled', "Show a command input pinned at the bottom of the terminal and one block per command above it. Requires shell integration; terminals without it behave like a stock terminal. Applies to new terminals."),
++		type: 'boolean',
++		default: true,
++		scope: ConfigurationScope.WINDOW,
++	},
++};
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
+new file mode 100644
+index 00000000..0dbe623a
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlocksEnablement.test.ts
+@@ -0,0 +1,27 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { strictEqual } from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
++import { shouldEnableBlocks } from '../../browser/onyxBlocksEnablement.js';
++
++suite('Onyx blocks enablement', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	test('enabled when setting on, command detection present and xterm open', () => {
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: true }), true);
++	});
++
++	test('disabled when the setting is off', () => {
++		strictEqual(shouldEnableBlocks({ settingEnabled: false, hasCommandDetection: true, xtermOpened: true }), false);
++	});
++
++	test('disabled without shell integration (no command detection)', () => {
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: false, xtermOpened: true }), false);
++	});
++
++	test('disabled before xterm is in the DOM', () => {
++		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: false }), false);
++	});
++});
