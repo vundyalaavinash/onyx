@@ -69,6 +69,85 @@ index 00000000..24a06183
 +.onyx-block-input .monaco-editor .margin {
 +	background-color: #000 !important;
 +}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts
+new file mode 100644
+index 00000000..c4def177
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockCompletions.ts
+@@ -0,0 +1,73 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import type { CancellationToken } from '../../../../../base/common/cancellation.js';
++import type { URI } from '../../../../../base/common/uri.js';
++import { Range } from '../../../../../editor/common/core/range.js';
++import type { Position } from '../../../../../editor/common/core/position.js';
++import { CompletionItemKind, type CompletionContext, type CompletionItem, type CompletionItemProvider, type CompletionList } from '../../../../../editor/common/languages.js';
++import type { ITextModel } from '../../../../../editor/common/model.js';
++import type { ITerminalInstance } from '../../../terminal/browser/terminal.js';
++import { TerminalCompletionItemKind, type ITerminalCompletion } from '../../suggest/browser/terminalCompletionItem.js';
++import { ITerminalCompletionService } from '../../suggest/browser/terminalCompletionService.js';
++
++function mapKind(kind: TerminalCompletionItemKind | undefined): CompletionItemKind {
++	switch (kind) {
++		case TerminalCompletionItemKind.File:
++		case TerminalCompletionItemKind.SymbolicLinkFile:
++			return CompletionItemKind.File;
++		case TerminalCompletionItemKind.Folder:
++		case TerminalCompletionItemKind.SymbolicLinkFolder:
++			return CompletionItemKind.Folder;
++		case TerminalCompletionItemKind.Method:
++		case TerminalCompletionItemKind.Alias:
++			return CompletionItemKind.Method;
++		case TerminalCompletionItemKind.Argument:
++		case TerminalCompletionItemKind.OptionValue:
++			return CompletionItemKind.Value;
++		case TerminalCompletionItemKind.Option:
++		case TerminalCompletionItemKind.Flag:
++			return CompletionItemKind.Property;
++		default:
++			return CompletionItemKind.Text;
++	}
++}
++
++/** Feeds upstream's terminal completion providers into the block input's Monaco suggest widget. */
++export class OnyxBlockCompletionProvider implements CompletionItemProvider {
++	readonly _debugDisplayName = 'onyxBlocks';
++
++	constructor(
++		private readonly _instance: ITerminalInstance,
++		private readonly _inputUri: URI,
++		@ITerminalCompletionService private readonly _completionService: ITerminalCompletionService,
++	) { }
++
++	async provideCompletionItems(model: ITextModel, position: Position, _context: CompletionContext, token: CancellationToken): Promise<CompletionList | undefined> {
++		if (model.uri.toString() !== this._inputUri.toString()) {
++			return undefined;
++		}
++		const value = model.getValue();
++		const cursorIndex = model.getOffsetAt(position);
++		const items = await this._completionService.provideCompletions(
++			value, cursorIndex, true, this._instance.shellType, this._instance.capabilities, token, false, false, true,
++		);
++		if (!items || token.isCancellationRequested) {
++			return undefined;
++		}
++		const suggestions: CompletionItem[] = items.map((c: ITerminalCompletion) => {
++			const label = typeof c.label === 'string' ? c.label : c.label.label;
++			const [start, end] = c.replacementRange ?? [cursorIndex, cursorIndex];
++			return {
++				label,
++				kind: mapKind(c.kind),
++				detail: c.detail,
++				documentation: c.documentation,
++				insertText: c.inputData ?? label,
++				range: Range.fromPositions(model.getPositionAt(start), model.getPositionAt(end)),
++			};
++		});
++		return { suggestions };
++	}
++}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
 new file mode 100644
 index 00000000..4d5790e8
@@ -456,10 +535,10 @@ index 00000000..7f1a9d2e
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..2e37842e
+index 00000000..f7b16ac2
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,367 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -479,6 +558,8 @@ index 00000000..2e37842e
 +import type { ITerminalContributionContext } from '../../../terminal/browser/terminalExtensions.js';
 +import { getCommandHistory } from '../../history/common/history.js';
 +import { OnyxBlocksSettingId } from '../common/onyxBlocksConfiguration.js';
++import { ILanguageFeaturesService } from '../../../../../editor/common/services/languageFeatures.js';
++import { OnyxBlockCompletionProvider } from './onyxBlockCompletions.js';
 +import { OnyxBlockInput, type IOnyxBlockController } from './onyxBlockInput.js';
 +import { BlockModel, type IBlock } from './onyxBlockModel.js';
 +import { shouldEnableBlocks } from './onyxBlocksEnablement.js';
@@ -508,6 +589,7 @@ index 00000000..2e37842e
 +		private readonly _ctx: ITerminalContributionContext,
 +		@IConfigurationService private readonly _configurationService: IConfigurationService,
 +		@IInstantiationService private readonly _instantiationService: IInstantiationService,
++		@ILanguageFeaturesService private readonly _languageFeaturesService: ILanguageFeaturesService,
 +		@IClipboardService private readonly _clipboardService: IClipboardService,
 +		@ICommandService private readonly _commandService: ICommandService,
 +		@INotificationService private readonly _notificationService: INotificationService,
@@ -578,6 +660,10 @@ index 00000000..2e37842e
 +
 +		const input = this._instantiationService.createInstance(OnyxBlockInput, wrapper, xterm.getFont(), this._ctx.instance.shellType, this);
 +		this._input.value = input;
++		this._enabledParts.add(this._languageFeaturesService.completionProvider.register(
++			{ scheme: OnyxBlockInput.SCHEME },
++			this._instantiationService.createInstance(OnyxBlockCompletionProvider, this._ctx.instance, input.uri),
++		));
 +		this._enabledParts.add(input.onDidChangeHeight(h => this._applyInputHeight(h)));
 +		this._applyInputHeight(input.height);
 +		if (this._lastDimension) {
@@ -972,10 +1058,10 @@ index 00000000..8e2a62da
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
 new file mode 100644
-index 00000000..58f21aba
+index 00000000..446e9f20
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,178 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -987,6 +1073,15 @@ index 00000000..58f21aba
 +import { registerTerminalContribution } from '../../../terminal/browser/terminalExtensions.js';
 +import { onyxBlocksConfiguration } from '../common/onyxBlocksConfiguration.js';
 +import { OnyxBlocksContribution } from './onyxBlocksContribution.js';
++import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
++import { ICodeEditorService } from '../../../../../editor/browser/services/codeEditorService.js';
++import { EditorContextKeys } from '../../../../../editor/common/editorContextKeys.js';
++import { Context as SuggestContext } from '../../../../../editor/contrib/suggest/browser/suggest.js';
++import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
++import type { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
++import { KeybindingsRegistry, KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
++import { TerminalContextKeys } from '../../../terminal/common/terminalContextKey.js';
++import { OnyxBlockInput, OnyxBlocksContextKeys } from './onyxBlockInput.js';
 +
 +// #region Configuration
 +
@@ -1003,6 +1098,146 @@ index 00000000..58f21aba
 +// #region Terminal Contributions
 +
 +registerTerminalContribution(OnyxBlocksContribution.ID, OnyxBlocksContribution);
++
++// #endregion
++
++// #region Keybindings
++
++const inputFocused = OnyxBlocksContextKeys.inputFocused;
++const noSuggest = SuggestContext.Visible.negate();
++const weight = KeybindingWeight.WorkbenchContrib + 1;
++
++function withInput(accessor: ServicesAccessor, fn: (input: OnyxBlockInput) => void): void {
++	const input = OnyxBlockInput.getFocused(accessor.get(ICodeEditorService));
++	if (input) {
++		fn(input);
++	}
++}
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.run',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.Enter,
++	handler: accessor => withInput(accessor, input => input.controller.run(input.value)),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.newline',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.Shift | KeyCode.Enter,
++	handler: accessor => withInput(accessor, input => input.editor.trigger('keyboard', 'type', { text: '\n' })),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.historyPrevious',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.UpArrow,
++	handler: accessor => withInput(accessor, input => {
++		if (!input.cursorOnFirstLine()) {
++			input.editor.trigger('keyboard', 'cursorUp', null);
++			return;
++		}
++		const entry = input.history.previous(input.value);
++		if (entry !== undefined) {
++			input.setValue(entry);
++		}
++	}),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.historyNext',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.DownArrow,
++	handler: accessor => withInput(accessor, input => {
++		if (!input.cursorOnLastLine()) {
++			input.editor.trigger('keyboard', 'cursorDown', null);
++			return;
++		}
++		const entry = input.history.next();
++		if (entry !== undefined) {
++			input.setValue(entry);
++		}
++	}),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.triggerSuggest',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.Tab,
++	handler: accessor => withInput(accessor, input => input.editor.trigger('keyboard', 'editor.action.triggerSuggest', {})),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.interruptOrClear',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, EditorContextKeys.hasNonEmptySelection.negate()),
++	primary: KeyMod.CtrlCmd | KeyCode.KeyC,
++	mac: { primary: KeyMod.WinCtrl | KeyCode.KeyC },
++	handler: accessor => withInput(accessor, input => input.controller.interrupt()),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.clearInput',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.KeyU,
++	mac: { primary: KeyMod.WinCtrl | KeyCode.KeyU },
++	handler: accessor => withInput(accessor, input => input.clear()),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.clearTerminal',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.KeyL,
++	mac: { primary: KeyMod.WinCtrl | KeyCode.KeyL },
++	handler: accessor => withInput(accessor, input => input.controller.clearTerminal()),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.selectPreviousBlock',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyMod.CtrlCmd | KeyCode.UpArrow,
++	handler: accessor => withInput(accessor, input => input.controller.selectBlock('previous')),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.selectNextBlock',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyMod.CtrlCmd | KeyCode.DownArrow,
++	handler: accessor => withInput(accessor, input => input.controller.selectBlock('next')),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.clearBlockSelection',
++	weight,
++	when: ContextKeyExpr.and(inputFocused, noSuggest),
++	primary: KeyCode.Escape,
++	handler: accessor => withInput(accessor, input => input.controller.selectBlock('clear')),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.copyTerminalSelection',
++	weight: weight + 1,
++	when: ContextKeyExpr.and(inputFocused, TerminalContextKeys.textSelected),
++	primary: KeyMod.CtrlCmd | KeyCode.KeyC,
++	handler: accessor => withInput(accessor, input => input.controller.copyTerminalSelection()),
++});
++
++KeybindingsRegistry.registerCommandAndKeybindingRule({
++	id: 'onyx.blocks.focusFind',
++	weight,
++	when: inputFocused,
++	primary: KeyMod.CtrlCmd | KeyCode.KeyF,
++	handler: accessor => withInput(accessor, input => input.controller.focusFind()),
++});
 +
 +// #endregion
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/common/onyxBlocksConfiguration.ts
