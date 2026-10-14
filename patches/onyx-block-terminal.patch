@@ -9,10 +9,10 @@ index 8b880c7f..d1a74774 100644
 +import '../terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.js';
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
 new file mode 100644
-index 00000000..a71ce205
+index 00000000..24a06183
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/media/onyxBlocks.css
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,56 @@
 +/* Onyx block terminal */
 +
 +.monaco-workbench .terminal-wrapper.onyx-blocks {
@@ -22,6 +22,247 @@ index 00000000..a71ce205
 +/* The input's height is reserved as xterm padding so rows shrink instead of being covered. */
 +.monaco-workbench .terminal-wrapper.onyx-blocks .xterm {
 +	padding-bottom: var(--onyx-block-input-height, 0px);
++}
++
++.monaco-workbench .terminal-wrapper.onyx-blocks .onyx-block-input {
++	position: absolute;
++	left: 0;
++	right: 0;
++	bottom: 0;
++	z-index: 33;
++	box-sizing: border-box;
++	background: #000;
++	border-top: 1px solid #1a1a1a;
++	display: flex;
++	flex-direction: column;
++}
++
++.onyx-block-input-header {
++	height: 18px;
++	line-height: 18px;
++	padding: 0 8px;
++	font-size: 11px;
++	color: #8e8e8e;
++	white-space: nowrap;
++	overflow: hidden;
++	text-overflow: ellipsis;
++}
++
++.onyx-block-input-row {
++	display: flex;
++	align-items: flex-start;
++}
++
++.onyx-block-input-prompt {
++	color: #00c2ff;
++	padding: 0 6px 0 8px;
++	user-select: none;
++}
++
++.onyx-block-input-editor {
++	flex: 1;
++	min-width: 0;
++}
++
++.onyx-block-input .monaco-editor,
++.onyx-block-input .monaco-editor .monaco-editor-background,
++.onyx-block-input .monaco-editor .margin {
++	background-color: #000 !important;
++}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
+new file mode 100644
+index 00000000..4d5790e8
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockInput.ts
+@@ -0,0 +1,189 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import * as dom from '../../../../../base/browser/dom.js';
++import { Emitter, Event } from '../../../../../base/common/event.js';
++import { Disposable, toDisposable } from '../../../../../base/common/lifecycle.js';
++import { URI } from '../../../../../base/common/uri.js';
++import type { ICodeEditor } from '../../../../../editor/browser/editorBrowser.js';
++import { ICodeEditorService } from '../../../../../editor/browser/services/codeEditorService.js';
++import { CodeEditorWidget } from '../../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
++import type { ITextModel } from '../../../../../editor/common/model.js';
++import { ILanguageService } from '../../../../../editor/common/languages/language.js';
++import { IModelService } from '../../../../../editor/common/services/model.js';
++import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
++import { IContextKeyService, RawContextKey, type IContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
++import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
++import { ServiceCollection } from '../../../../../platform/instantiation/common/serviceCollection.js';
++import { GeneralShellType, type TerminalShellType } from '../../../../../platform/terminal/common/terminal.js';
++import { getSimpleCodeEditorWidgetOptions, getSimpleEditorOptions } from '../../../codeEditor/browser/simpleEditorOptions.js';
++import type { ITerminalFont } from '../../../terminal/common/terminal.js';
++import type { BlockModel } from './onyxBlockModel.js';
++import { InputHistory } from './onyxInputHistory.js';
++
++export const MaxInputLines = 8;
++const HeaderHeight = 18;
++
++export namespace OnyxBlocksContextKeys {
++	export const inputFocused = new RawContextKey<boolean>('onyxBlocks.inputFocused', false, 'Whether the Onyx block terminal input is focused.');
++}
++
++export interface IOnyxBlockController {
++	readonly model: BlockModel;
++	run(text: string): void;
++	interrupt(): void;
++	clearTerminal(): void;
++	selectBlock(direction: 'previous' | 'next' | 'clear'): void;
++	copyTerminalSelection(): void;
++	focusFind(): void;
++}
++
++const inputsByEditor = new Map<ICodeEditor, OnyxBlockInput>();
++let nextInputId = 1;
++
++export class OnyxBlockInput extends Disposable {
++	static readonly SCHEME = 'onyx-block-input';
++
++	static getFocused(codeEditorService: ICodeEditorService): OnyxBlockInput | undefined {
++		const editor = codeEditorService.getFocusedCodeEditor();
++		return editor ? inputsByEditor.get(editor) : undefined;
++	}
++
++	readonly domNode: HTMLElement;
++	readonly editor: CodeEditorWidget;
++	readonly history = new InputHistory();
++	/** The input model's URI; the completion provider answers only for this model. */
++	readonly uri: URI;
++
++	private readonly _header: HTMLElement;
++	private readonly _editorHost: HTMLElement;
++	private readonly _model: ITextModel;
++	private readonly _focusedKey: IContextKey<boolean>;
++	private _lineHeight: number;
++	private _width = 0;
++	private _height = 0;
++	private _visible = true;
++
++	private readonly _onDidChangeHeight = this._register(new Emitter<number>());
++	readonly onDidChangeHeight: Event<number> = this._onDidChangeHeight.event;
++
++	get height(): number { return this._visible ? this._height : 0; }
++	get value(): string { return this._model.getValue(); }
++
++	constructor(
++		parent: HTMLElement,
++		font: ITerminalFont,
++		shellType: TerminalShellType | undefined,
++		readonly controller: IOnyxBlockController,
++		@IInstantiationService instantiationService: IInstantiationService,
++		@IContextKeyService contextKeyService: IContextKeyService,
++		@IModelService modelService: IModelService,
++		@ILanguageService languageService: ILanguageService,
++		@IConfigurationService configurationService: IConfigurationService,
++	) {
++		super();
++		this.domNode = dom.append(parent, dom.$('.onyx-block-input'));
++		this._register(toDisposable(() => this.domNode.remove()));
++		this._header = dom.append(this.domNode, dom.$('.onyx-block-input-header'));
++		const row = dom.append(this.domNode, dom.$('.onyx-block-input-row'));
++		const glyph = dom.append(row, dom.$('.onyx-block-input-prompt'));
++		glyph.textContent = '❯';
++		this._editorHost = dom.append(row, dom.$('.onyx-block-input-editor'));
++
++		this._lineHeight = Math.max(font.charHeight ?? Math.round(font.fontSize * font.lineHeight), 12);
++		const fontFamily = font.fontFamily;
++		glyph.style.fontFamily = fontFamily;
++		glyph.style.fontSize = `${font.fontSize}px`;
++		glyph.style.lineHeight = `${this._lineHeight}px`;
++		this._header.style.fontFamily = fontFamily;
++
++		const languageId = shellType === GeneralShellType.PowerShell ? 'powershell' : 'shellscript';
++		this.uri = URI.from({ scheme: OnyxBlockInput.SCHEME, path: `/input-${nextInputId++}` });
++		this._model = this._register(modelService.createModel('', languageService.createById(languageId), this.uri));
++
++		const scopedContextKeyService = this._register(contextKeyService.createScoped(this.domNode));
++		this._focusedKey = OnyxBlocksContextKeys.inputFocused.bindTo(scopedContextKeyService);
++		const scopedInstantiation = this._register(instantiationService.createChild(new ServiceCollection([IContextKeyService, scopedContextKeyService])));
++
++		this.editor = this._register(scopedInstantiation.createInstance(CodeEditorWidget, this._editorHost, {
++			...getSimpleEditorOptions(configurationService),
++			fontFamily,
++			fontSize: font.fontSize,
++			lineHeight: this._lineHeight,
++			wordWrap: 'on',
++			quickSuggestions: false,
++			suggestOnTriggerCharacters: false,
++			padding: { top: 0, bottom: 0 },
++			ariaLabel: 'Onyx terminal input',
++		}, getSimpleCodeEditorWidgetOptions()));
++		this.editor.setModel(this._model);
++		inputsByEditor.set(this.editor, this);
++		this._register({ dispose: () => inputsByEditor.delete(this.editor) });
++
++		this._register(this.editor.onDidFocusEditorText(() => this._focusedKey.set(true)));
++		this._register(this.editor.onDidBlurEditorText(() => this._focusedKey.set(false)));
++		this._register(this.editor.onDidChangeModelContent(e => {
++			if (!e.isFlush) {
++				this.history.reset();
++			}
++			this._relayout();
++		}));
++		this._relayout();
++	}
++
++	setHeader(text: string): void {
++		this._header.textContent = text;
++		this._header.title = text;
++	}
++
++	setValue(text: string): void {
++		this._model.setValue(text);
++		const last = this._model.getLineCount();
++		this.editor.setPosition({ lineNumber: last, column: this._model.getLineMaxColumn(last) });
++	}
++
++	clear(): void {
++		this.setValue('');
++	}
++
++	focus(): void {
++		this.editor.focus();
++	}
++
++	setVisible(visible: boolean): void {
++		if (this._visible === visible) {
++			return;
++		}
++		this._visible = visible;
++		this.domNode.style.display = visible ? '' : 'none';
++		this._onDidChangeHeight.fire(this.height);
++	}
++
++	layout(width: number): void {
++		this._width = width;
++		this._relayout();
++	}
++
++	/** True when the cursor sits on the first line (for Up history). */
++	cursorOnFirstLine(): boolean {
++		return (this.editor.getPosition()?.lineNumber ?? 1) === 1;
++	}
++
++	/** True when the cursor sits on the last line (for Down history). */
++	cursorOnLastLine(): boolean {
++		return (this.editor.getPosition()?.lineNumber ?? 1) === this._model.getLineCount();
++	}
++
++	private _relayout(): void {
++		const lines = Math.min(Math.max(this._model.getLineCount(), 1), MaxInputLines);
++		const editorHeight = lines * this._lineHeight;
++		const editorWidth = Math.max(this._width - this._editorHost.offsetLeft, 0);
++		this.editor.layout({ width: editorWidth, height: editorHeight });
++		const total = HeaderHeight + editorHeight + 1 /* top border */;
++		if (total !== this._height) {
++			this._height = total;
++			this._onDidChangeHeight.fire(this.height);
++		}
++	}
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
 new file mode 100644
@@ -204,10 +445,10 @@ index 00000000..0fd6c8f3
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..b69a73fa
+index 00000000..319f5508
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,340 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -215,31 +456,50 @@ index 00000000..b69a73fa
 +import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 +import type { IDimension } from '../../../../../base/browser/dom.js';
 +import { Event } from '../../../../../base/common/event.js';
-+import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
++import { Disposable, DisposableStore, MutableDisposable } from '../../../../../base/common/lifecycle.js';
++import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
++import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 +import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-+import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
++import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
++import { INotificationService } from '../../../../../platform/notification/common/notification.js';
++import { TerminalCapability, type ICommandDetectionCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
++import { localize } from '../../../../../nls.js';
 +import type { ITerminalContribution, ITerminalInstance, IXtermTerminal } from '../../../terminal/browser/terminal.js';
 +import type { ITerminalContributionContext } from '../../../terminal/browser/terminalExtensions.js';
++import { getCommandHistory } from '../../history/common/history.js';
 +import { OnyxBlocksSettingId } from '../common/onyxBlocksConfiguration.js';
++import { OnyxBlockInput, type IOnyxBlockController } from './onyxBlockInput.js';
++import { BlockModel, type IBlock } from './onyxBlockModel.js';
 +import { shouldEnableBlocks } from './onyxBlocksEnablement.js';
++import { deriveInputState, InputState, sendPathFor } from './onyxInputState.js';
 +
-+export class OnyxBlocksContribution extends Disposable implements ITerminalContribution {
++export const AgentSendBlockCommandId = 'onyx.agent.sendBlock';
++
++export class OnyxBlocksContribution extends Disposable implements ITerminalContribution, IOnyxBlockController {
 +	static readonly ID = 'terminal.onyxBlocks';
 +
 +	static get(instance: ITerminalInstance): OnyxBlocksContribution | null {
 +		return instance.getContribution<OnyxBlocksContribution>(OnyxBlocksContribution.ID);
 +	}
 +
++	readonly model = this._register(new BlockModel());
++
 +	private _xterm?: IXtermTerminal & { raw: RawXtermTerminal };
 +	private _xtermOpened = false;
-+	// Not private: unread until later tasks consume it (noUnusedLocals flags unread private members).
-+	protected _lastDimension?: IDimension;
-+	private readonly _enabledParts = this._register(new DisposableStore());
++	private _lastDimension?: IDimension;
 +	private _isEnabled = false;
++	private _state = InputState.Prompt;
++	private _relayoutQueued = false;
++	private readonly _enabledParts = this._register(new DisposableStore());
++	private readonly _input = this._register(new MutableDisposable<OnyxBlockInput>());
 +
 +	constructor(
 +		private readonly _ctx: ITerminalContributionContext,
 +		@IConfigurationService private readonly _configurationService: IConfigurationService,
++		@IInstantiationService private readonly _instantiationService: IInstantiationService,
++		@IClipboardService private readonly _clipboardService: IClipboardService,
++		@ICommandService private readonly _commandService: ICommandService,
++		@INotificationService private readonly _notificationService: INotificationService,
 +	) {
 +		super();
 +		this._register(Event.runAndSubscribe(this._configurationService.onDidChangeConfiguration, e => {
@@ -259,6 +519,9 @@ index 00000000..b69a73fa
 +		}));
 +	}
 +
++	get input(): OnyxBlockInput | undefined { return this._input.value; }
++	get state(): InputState { return this._state; }
++
 +	xtermReady(xterm: IXtermTerminal & { raw: RawXtermTerminal }): void {
 +		this._xterm = xterm;
 +		this._refreshState();
@@ -272,7 +535,10 @@ index 00000000..b69a73fa
 +
 +	layout(_xterm: IXtermTerminal & { raw: RawXtermTerminal }, dimension: IDimension): void {
 +		this._lastDimension = dimension;
++		this._input.value?.layout(dimension.width);
 +	}
++
++	// #region enable / disable
 +
 +	private _refreshState(): void {
 +		const wanted = shouldEnableBlocks({
@@ -288,14 +554,240 @@ index 00000000..b69a73fa
 +	}
 +
 +	private _enable(): void {
++		const xterm = this._xterm;
++		const capability = this._ctx.instance.capabilities.get(TerminalCapability.CommandDetection);
++		const wrapper = this._ctx.instance.domElement;
++		if (!xterm?.raw.element || !capability || !wrapper) {
++			return;
++		}
 +		this._isEnabled = true;
-+		// Filled in by later tasks: model, input, overlay.
++		wrapper.classList.add('onyx-blocks');
++
++		this.model.attach(capability);
++
++		const input = this._instantiationService.createInstance(OnyxBlockInput, wrapper, xterm.getFont(), this._ctx.instance.shellType, this);
++		this._input.value = input;
++		this._enabledParts.add(input.onDidChangeHeight(h => this._applyInputHeight(h)));
++		this._applyInputHeight(input.height);
++		if (this._lastDimension) {
++			input.layout(this._lastDimension.width);
++		}
++
++		// History: this session's commands first, then the persisted per-shell history.
++		this._loadHistory(input, capability);
++		this._enabledParts.add(capability.onCommandFinished(c => { if (c.command) { input.history.push(c.command); } }));
++
++		// Working directory header.
++		this._updateHeader(input, capability);
++		const cwdCap = this._ctx.instance.capabilities.get(TerminalCapability.CwdDetection);
++		if (cwdCap) {
++			this._enabledParts.add(cwdCap.onDidChangeCwd(() => this._updateHeader(input, capability)));
++		}
++		this._enabledParts.add(capability.onCommandFinished(() => this._updateHeader(input, capability)));
++
++		// State: prompt / executing / alt buffer.
++		const update = () => this._updateInputState(capability);
++		this._enabledParts.add(capability.onCommandStarted(update));
++		this._enabledParts.add(capability.onCommandExecuted(update));
++		this._enabledParts.add(capability.onCommandFinished(update));
++		this._enabledParts.add(capability.onCurrentCommandInvalidated(update));
++		this._enabledParts.add(capability.promptInputModel.onDidChangeInput(update));
++		this._enabledParts.add(xterm.raw.buffer.onBufferChange(update));
++		update();
++
++		// Typing anywhere in the terminal lands in the input unless a full-screen program owns it.
++		const textarea = xterm.raw.textarea;
++		if (textarea) {
++			const onFocus = () => {
++				if (this._state !== InputState.AltBuffer) {
++					input.focus();
++				}
++			};
++			textarea.addEventListener('focus', onFocus);
++			this._enabledParts.add({ dispose: () => textarea.removeEventListener('focus', onFocus) });
++		}
++		this._enabledParts.add(this._ctx.instance.onDidFocus(() => {
++			if (this._state !== InputState.AltBuffer) {
++				input.focus();
++			}
++		}));
++		if (this._ctx.instance.hasFocus) {
++			input.focus();
++		}
 +	}
 +
 +	private _disable(): void {
 +		this._isEnabled = false;
 +		this._enabledParts.clear();
++		this._input.clear();
++		const wrapper = this._ctx.instance.domElement;
++		if (wrapper) {
++			wrapper.classList.remove('onyx-blocks');
++			wrapper.style.removeProperty('--onyx-block-input-height');
++		}
++		this._relayoutTerminal();
 +	}
++
++	// #endregion
++
++	// #region layout
++
++	private _applyInputHeight(height: number): void {
++		const wrapper = this._ctx.instance.domElement;
++		if (!wrapper) {
++			return;
++		}
++		wrapper.style.setProperty('--onyx-block-input-height', `${height}px`);
++		this._relayoutTerminal();
++	}
++
++	/** Re-run the instance layout so xterm picks up the new padding. Guarded against re-entry. */
++	private _relayoutTerminal(): void {
++		if (!this._lastDimension || this._relayoutQueued) {
++			return;
++		}
++		this._relayoutQueued = true;
++		queueMicrotask(() => {
++			this._relayoutQueued = false;
++			if (this._lastDimension) {
++				this._ctx.instance.layout(this._lastDimension);
++			}
++		});
++	}
++
++	// #endregion
++
++	// #region state
++
++	private _updateInputState(capability: ICommandDetectionCapability): void {
++		const xterm = this._xterm;
++		const input = this._input.value;
++		if (!xterm || !input) {
++			return;
++		}
++		const next = deriveInputState({
++			altBufferActive: xterm.raw.buffer.active.type === 'alternate',
++			commandExecuting: capability.executingCommand !== undefined,
++		});
++		if (next === this._state) {
++			return;
++		}
++		const wasAlt = this._state === InputState.AltBuffer;
++		this._state = next;
++		input.setVisible(next !== InputState.AltBuffer);
++		if (next === InputState.AltBuffer) {
++			xterm.raw.focus();
++		} else if (wasAlt && this._ctx.instance.hasFocus) {
++			input.focus();
++		}
++	}
++
++	private _updateHeader(input: OnyxBlockInput, capability: ICommandDetectionCapability): void {
++		const cwdCap = this._ctx.instance.capabilities.get(TerminalCapability.CwdDetection);
++		input.setHeader(cwdCap?.getCwd() || capability.cwd || this._ctx.instance.initialCwd || '');
++	}
++
++	private _loadHistory(input: OnyxBlockInput, capability: ICommandDetectionCapability): void {
++		const session = capability.commands.map(c => c.command).filter(c => c.length > 0);
++		const persisted: string[] = [];
++		const shellType = this._ctx.instance.shellType;
++		this._instantiationService.invokeFunction(accessor => {
++			for (const [cmd, info] of getCommandHistory(accessor).entries) {
++				if (info.shellType === shellType) {
++					persisted.push(cmd);
++				}
++			}
++		});
++		input.history.load(session, persisted.reverse());
++	}
++
++	// #endregion
++
++	// #region IOnyxBlockController
++
++	run(text: string): void {
++		const input = this._input.value;
++		const path = sendPathFor(this._state, text);
++		switch (path.kind) {
++			case 'runCommand':
++				void this._ctx.instance.runCommand(path.text, true, undefined, path.bracketed);
++				input?.history.push(path.text);
++				input?.clear();
++				break;
++			case 'sendText':
++				void this._ctx.instance.sendText(path.text, true);
++				input?.clear();
++				break;
++			case 'none':
++				break;
++		}
++	}
++
++	interrupt(): void {
++		if (this._state === InputState.Executing) {
++			void this._ctx.instance.sendText('\x03', false);
++		} else {
++			this._input.value?.clear();
++		}
++	}
++
++	clearTerminal(): void {
++		void this._commandService.executeCommand('workbench.action.terminal.clear');
++	}
++
++	selectBlock(direction: 'previous' | 'next' | 'clear'): void {
++		switch (direction) {
++			case 'previous': this.model.selectPrevious(); break;
++			case 'next': this.model.selectNext(); break;
++			case 'clear': this.model.select(undefined); break;
++		}
++	}
++
++	copyTerminalSelection(): void {
++		this._xterm?.copySelection();
++	}
++
++	focusFind(): void {
++		void this._commandService.executeCommand('workbench.action.terminal.focusFind');
++	}
++
++	// #endregion
++
++	// #region block actions (used by the overlay in Task 6)
++
++	copyCommand(block: IBlock): void {
++		void this._clipboardService.writeText(block.commandLine);
++	}
++
++	copyOutput(block: IBlock): void {
++		void this._clipboardService.writeText(block.command?.getOutput() ?? '');
++	}
++
++	rerun(block: IBlock): void {
++		const input = this._input.value;
++		if (this._state === InputState.Prompt) {
++			this.run(block.commandLine);
++		} else {
++			input?.setValue(block.commandLine);
++			input?.focus();
++		}
++	}
++
++	sendToAgent(block: IBlock): void {
++		if (!CommandsRegistry.getCommand(AgentSendBlockCommandId)) {
++			this._notificationService.info(localize('onyx.blocks.noAgent', "Agent API not installed yet"));
++			return;
++		}
++		void this._commandService.executeCommand(AgentSendBlockCommandId, {
++			command: block.commandLine,
++			output: block.command?.getOutput() ?? '',
++			exitCode: block.exitCode,
++			cwd: block.command?.cwd,
++			shellType: this._ctx.instance.shellType,
++		});
++	}
++
++	// #endregion
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksEnablement.ts
 new file mode 100644
