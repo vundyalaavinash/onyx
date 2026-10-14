@@ -1,3 +1,4 @@
+# no -u: the upstream build scripts read unset vars (get_repo.sh RELEASE_VERSION)
 set shell := ["bash", "-eo", "pipefail", "-c"]
 
 export OS_NAME := "osx"
@@ -13,7 +14,7 @@ export SHOULD_BUILD_REH_WEB := "no"
 clone:
     rm -rf vscode && . ./get_repo.sh
 
-# Apply patches and product.json without installing node modules (fast drift check)
+# Apply patches and product.json without npm install: the fast drift check. Skips the telemetry rewrite (needs node_modules); `just build` runs it.
 prepare: clone
     SKIP_INSTALL=yes ./prepare_vscode.sh
 

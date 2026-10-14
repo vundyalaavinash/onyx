@@ -9,7 +9,7 @@ Grab the latest build from [Releases](https://github.com/vundyalaavinash/onyx/re
 ## Build locally (macOS)
 
 ```
-brew install just jq librsvg imagemagick libicns icoutils
+brew install just jq git-lfs librsvg imagemagick libicns icoutils
 nvm install && nvm use
 just build      # clones upstream, applies patches, builds ~30 min
 just run        # opens the built app
