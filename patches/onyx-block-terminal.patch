@@ -317,6 +317,136 @@ index 00000000..d176ce86
 +export function shouldEnableBlocks(input: IEnablementInput): boolean {
 +	return input.settingEnabled && input.hasCommandDetection && input.xtermOpened;
 +}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputHistory.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputHistory.ts
+new file mode 100644
+index 00000000..8b5e7d81
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputHistory.ts
+@@ -0,0 +1,71 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++export const HistoryCap = 500;
++
++/**
++ * Up/Down history for the block input. Index 0 is the newest entry. The cursor is -1 while the
++ * user is on their live draft.
++ */
++export class InputHistory {
++	private _entries: string[] = [];
++	private _cursor = -1;
++	private _draft = '';
++
++	constructor(private readonly _cap: number = HistoryCap) { }
++
++	get entries(): readonly string[] { return this._entries; }
++
++	/** @param session commands from this terminal, oldest first. @param persisted older commands, newest first. */
++	load(session: readonly string[], persisted: readonly string[]): void {
++		const seen = new Set<string>();
++		const out: string[] = [];
++		for (const raw of [...[...session].reverse(), ...persisted]) {
++			const cmd = raw.trim();
++			if (cmd.length === 0 || seen.has(cmd)) {
++				continue;
++			}
++			seen.add(cmd);
++			out.push(cmd);
++			if (out.length >= this._cap) {
++				break;
++			}
++		}
++		this._entries = out;
++		this.reset();
++	}
++
++	push(raw: string): void {
++		const cmd = raw.trim();
++		if (cmd.length === 0) {
++			return;
++		}
++		this._entries = [cmd, ...this._entries.filter(e => e !== cmd)].slice(0, this._cap);
++		this.reset();
++	}
++
++	previous(current: string): string | undefined {
++		if (this._cursor + 1 >= this._entries.length) {
++			return undefined;
++		}
++		if (this._cursor === -1) {
++			this._draft = current;
++		}
++		this._cursor++;
++		return this._entries[this._cursor];
++	}
++
++	next(): string | undefined {
++		if (this._cursor === -1) {
++			return undefined;
++		}
++		this._cursor--;
++		return this._cursor === -1 ? this._draft : this._entries[this._cursor];
++	}
++
++	reset(): void {
++		this._cursor = -1;
++		this._draft = '';
++	}
++}
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts
+new file mode 100644
+index 00000000..8e2a62da
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxInputState.ts
+@@ -0,0 +1,47 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++export const enum InputState {
++	/** Shell is at a prompt: Enter runs the text as one command. */
++	Prompt = 'prompt',
++	/** A foreground command is running: Enter forwards the text to it. */
++	Executing = 'executing',
++	/** A full-screen program owns the terminal: the input is hidden. */
++	AltBuffer = 'altBuffer',
++}
++
++export interface IInputSignals {
++	altBufferActive: boolean;
++	commandExecuting: boolean;
++}
++
++export function deriveInputState(s: IInputSignals): InputState {
++	if (s.altBufferActive) {
++		return InputState.AltBuffer;
++	}
++	if (s.commandExecuting) {
++		return InputState.Executing;
++	}
++	return InputState.Prompt;
++}
++
++export type SendPath =
++	| { kind: 'runCommand'; text: string; bracketed: boolean }
++	| { kind: 'sendText'; text: string }
++	| { kind: 'none' };
++
++export function sendPathFor(state: InputState, rawText: string): SendPath {
++	const text = rawText.replace(/\s+$/, '');
++	if (text.length === 0) {
++		return { kind: 'none' };
++	}
++	switch (state) {
++		case InputState.Prompt:
++			return { kind: 'runCommand', text, bracketed: text.includes('\n') };
++		case InputState.Executing:
++			return { kind: 'sendText', text };
++		default:
++			return { kind: 'none' };
++	}
++}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/terminal.onyxBlocks.contribution.ts
 new file mode 100644
 index 00000000..58f21aba
@@ -597,5 +727,132 @@ index 00000000..0dbe623a
 +
 +	test('disabled before xterm is in the DOM', () => {
 +		strictEqual(shouldEnableBlocks({ settingEnabled: true, hasCommandDetection: true, xtermOpened: false }), false);
++	});
++});
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputHistory.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputHistory.test.ts
+new file mode 100644
+index 00000000..37a9c2fc
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputHistory.test.ts
+@@ -0,0 +1,66 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { deepStrictEqual, strictEqual } from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
++import { InputHistory } from '../../browser/onyxInputHistory.js';
++
++suite('Onyx input history', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	test('session commands come first, newest first, then persisted', () => {
++		const h = new InputHistory();
++		h.load(['git status', 'ls'], ['make', 'ls', 'pwd']);
++		deepStrictEqual(h.entries, ['ls', 'git status', 'make', 'pwd']);
++	});
++
++	test('duplicates keep the first occurrence; blank entries are dropped', () => {
++		const h = new InputHistory();
++		h.load(['ls', '  ', 'ls'], ['', 'ls', 'pwd']);
++		deepStrictEqual(h.entries, ['ls', 'pwd']);
++	});
++
++	test('cap applies', () => {
++		const h = new InputHistory(3);
++		h.load(['a', 'b', 'c', 'd'], ['e']);
++		deepStrictEqual(h.entries, ['d', 'c', 'b']);
++	});
++
++	test('previous walks older, next walks newer and restores the draft', () => {
++		const h = new InputHistory();
++		h.load(['first', 'second'], []);
++		strictEqual(h.previous('draft'), 'second');
++		strictEqual(h.previous('second'), 'first');
++		strictEqual(h.previous('first'), undefined, 'at the oldest entry previous returns undefined');
++		strictEqual(h.next(), 'second');
++		strictEqual(h.next(), 'draft');
++		strictEqual(h.next(), undefined, 'past the draft next returns undefined');
++	});
++
++	test('push adds to the front and resets the cursor', () => {
++		const h = new InputHistory();
++		h.load(['a'], []);
++		h.previous('');
++		h.push('b');
++		deepStrictEqual(h.entries, ['b', 'a']);
++		strictEqual(h.previous('x'), 'b');
++	});
++
++	test('push ignores blanks and moves an existing entry to the front', () => {
++		const h = new InputHistory();
++		h.load(['a', 'b'], []);
++		h.push('   ');
++		h.push('a');
++		deepStrictEqual(h.entries, ['a', 'b']);
++	});
++
++	test('reset returns to the live draft', () => {
++		const h = new InputHistory();
++		h.load(['a'], []);
++		h.previous('draft');
++		h.reset();
++		strictEqual(h.previous('new draft'), 'a');
++		strictEqual(h.next(), 'new draft');
++	});
++});
+diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts
+new file mode 100644
+index 00000000..7b415f87
+--- /dev/null
++++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxInputState.test.ts
+@@ -0,0 +1,49 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Onyx contributors. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { deepStrictEqual, strictEqual } from 'assert';
++import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
++import { deriveInputState, InputState, sendPathFor } from '../../browser/onyxInputState.js';
++
++suite('Onyx input state', () => {
++	ensureNoDisposablesAreLeakedInTestSuite();
++
++	test('alt buffer wins over everything', () => {
++		strictEqual(deriveInputState({ altBufferActive: true, commandExecuting: true }), InputState.AltBuffer);
++		strictEqual(deriveInputState({ altBufferActive: true, commandExecuting: false }), InputState.AltBuffer);
++	});
++
++	test('executing when a command is running', () => {
++		strictEqual(deriveInputState({ altBufferActive: false, commandExecuting: true }), InputState.Executing);
++	});
++
++	test('prompt otherwise', () => {
++		strictEqual(deriveInputState({ altBufferActive: false, commandExecuting: false }), InputState.Prompt);
++	});
++
++	test('prompt: single line runs as a command, not bracketed', () => {
++		deepStrictEqual(sendPathFor(InputState.Prompt, 'ls -la'), { kind: 'runCommand', text: 'ls -la', bracketed: false });
++	});
++
++	test('prompt: multi-line runs as one bracketed command', () => {
++		deepStrictEqual(sendPathFor(InputState.Prompt, 'cat <<EOF\nhi\nEOF'), { kind: 'runCommand', text: 'cat <<EOF\nhi\nEOF', bracketed: true });
++	});
++
++	test('prompt: trailing whitespace and newlines are trimmed', () => {
++		deepStrictEqual(sendPathFor(InputState.Prompt, 'ls  \n\n'), { kind: 'runCommand', text: 'ls', bracketed: false });
++	});
++
++	test('empty or whitespace input sends nothing in any state', () => {
++		deepStrictEqual(sendPathFor(InputState.Prompt, '   \n'), { kind: 'none' });
++		deepStrictEqual(sendPathFor(InputState.Executing, ''), { kind: 'none' });
++	});
++
++	test('executing: text is forwarded raw to the program', () => {
++		deepStrictEqual(sendPathFor(InputState.Executing, 'yes'), { kind: 'sendText', text: 'yes' });
++	});
++
++	test('alt buffer: never sends', () => {
++		deepStrictEqual(sendPathFor(InputState.AltBuffer, ':q'), { kind: 'none' });
 +	});
 +});
