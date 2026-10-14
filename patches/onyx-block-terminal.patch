@@ -854,10 +854,10 @@ index 00000000..1ba918e6
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..75d876e3
+index 00000000..d2525198
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,459 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -865,10 +865,11 @@ index 00000000..75d876e3
 +import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 +import type { IDimension } from '../../../../../base/browser/dom.js';
 +import { Event } from '../../../../../base/common/event.js';
++import { disposableTimeout } from '../../../../../base/common/async.js';
 +import { Disposable, DisposableStore, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 +import { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 +import { IAccessibilityService } from '../../../../../platform/accessibility/common/accessibility.js';
-+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
++import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 +import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 +import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 +import { INotificationService } from '../../../../../platform/notification/common/notification.js';
@@ -908,6 +909,7 @@ index 00000000..75d876e3
 +	private _sentByInput = false;
 +	/** Set after sending \x15 until the shell line reads empty, so one line is adopted once. */
 +	private _killPending = false;
++	private readonly _adoptTimer = this._register(new MutableDisposable());
 +	private readonly _enabledParts = this._register(new DisposableStore());
 +	private readonly _input = this._register(new MutableDisposable<OnyxBlockInput>());
 +
@@ -1076,6 +1078,8 @@ index 00000000..75d876e3
 +		this._state = InputState.Prompt;
 +		this._sentByInput = false;
 +		this._killPending = false;
++		const hadFocus = this._ctx.instance.hasFocus;
++		this._adoptTimer.clear();
 +		this._enabledParts.clear();
 +		this._input.clear();
 +		this.model.detach();
@@ -1085,6 +1089,9 @@ index 00000000..75d876e3
 +			wrapper.style.removeProperty('--onyx-block-input-height');
 +		}
 +		this._relayoutTerminal();
++		if (hadFocus) {
++			this._xterm?.raw.focus();
++		}
 +	}
 +
 +	// #endregion
@@ -1152,20 +1159,32 @@ index 00000000..75d876e3
 +
 +	/** Moves text the shell line received from elsewhere into the input and clears the shell line. */
 +	private _adoptShellLine(input: OnyxBlockInput, capability: ICommandDetectionCapability, e: IPromptInputModelState): void {
++		// cursorIndex -1 means a confident command line (OSC 633;E) from a command run outside the input
++		if (e.cursorIndex === -1) {
++			return;
++		}
 +		const text = e.ghostTextIndex === -1 ? e.value : e.value.substring(0, e.ghostTextIndex);
 +		if (text.trim().length === 0) {
 +			this._killPending = false;
 +			return;
 +		}
-+		if (this._state !== InputState.Prompt || capability.promptInputModel.state !== PromptInputState.Input || this._sentByInput || this._killPending) {
-+			return;
-+		}
-+		input.setValue(input.value + text);
-+		if (this._ctx.instance.hasFocus) {
-+			input.focus();
-+		}
-+		this._killPending = true;
-+		void this._ctx.instance.sendText('\x15', false);
++		// Debounce: a command sent with a newline echoes into the shell line a moment before it executes; only adopt text that is still sitting there.
++		this._adoptTimer.value = disposableTimeout(() => {
++			if (this._state !== InputState.Prompt || capability.promptInputModel.state !== PromptInputState.Input || this._sentByInput || this._killPending) {
++				return;
++			}
++			const model = capability.promptInputModel;
++			const current = model.ghostTextIndex === -1 ? model.value : model.value.substring(0, model.ghostTextIndex);
++			if (current.trim().length === 0) {
++				return;
++			}
++			input.setValue(input.value + current);
++			if (this._ctx.instance.hasFocus) {
++				input.focus();
++			}
++			this._killPending = true;
++			void this._ctx.instance.sendText('\x15', false);
++		}, 100);
 +	}
 +
 +	private _revealSelectedBlock(): void {
@@ -1287,7 +1306,11 @@ index 00000000..75d876e3
 +				cwd: block.command?.cwd,
 +				shellType: this._ctx.instance.shellType,
 +			});
-+		} catch {
++		} catch (err) {
++			if (CommandsRegistry.getCommand(AgentSendBlockCommandId)) {
++				this._notificationService.error(err instanceof Error ? err : String(err));
++				return;
++			}
 +			this._notificationService.info(localize('onyx.blocks.noAgent', "Agent API not installed yet"));
 +		}
 +	}
