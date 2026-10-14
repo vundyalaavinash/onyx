@@ -1,0 +1,315 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Override release version (e.g. 1.140.00042). Leave empty to compute."
+        type: string
+        default: ""
+
+permissions: {}
+
+env:
+  APP_NAME: Onyx
+  BINARY_NAME: onyx
+  ORG_NAME: vundyalaavinash
+  GH_REPO_PATH: vundyalaavinash/onyx
+  ASSETS_REPOSITORY: vundyalaavinash/onyx
+  VERSIONS_REPOSITORY: vundyalaavinash/versions
+  VSCODE_QUALITY: stable
+  MAX_OLD_SPACE_SIZE: 12288
+  SHOULD_BUILD: "yes"
+  SHOULD_BUILD_CLI: "no"
+  SHOULD_BUILD_REH: "no"
+  SHOULD_BUILD_REH_WEB: "no"
+  RELEASE_VERSION: ${{ inputs.release_version }}
+
+jobs:
+  version:
+    # One job computes RELEASE_VERSION so every platform publishes to the same release.
+    runs-on: ubuntu-24.04
+    outputs:
+      RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+      MS_TAG: ${{ env.MS_TAG }}
+      MS_COMMIT: ${{ env.MS_COMMIT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: . ./get_repo.sh
+
+  macos:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            vscode_arch: arm64
+          - runner: macos-15-intel
+            vscode_arch: x64
+    env:
+      OS_NAME: osx
+      VSCODE_ARCH: ${{ matrix.vscode_arch }}
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+      MS_TAG: ${{ needs.version.outputs.MS_TAG }}
+      MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+        if: matrix.vscode_arch == 'x64'
+      - run: . ./get_repo.sh
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+      - name: Package (signs and notarizes only when CERTIFICATE_OSX_P12_DATA is set)
+        env:
+          CERTIFICATE_OSX_APP_PASSWORD: ${{ secrets.CERTIFICATE_OSX_APP_PASSWORD }}
+          CERTIFICATE_OSX_APPLE_ID: ${{ secrets.CERTIFICATE_OSX_APPLE_ID }}
+          CERTIFICATE_OSX_P12_DATA: ${{ secrets.CERTIFICATE_OSX_P12_DATA }}
+          CERTIFICATE_OSX_P12_PASSWORD: ${{ secrets.CERTIFICATE_OSX_P12_PASSWORD }}
+          CERTIFICATE_OSX_TEAM_ID: ${{ secrets.CERTIFICATE_OSX_TEAM_ID }}
+        run: ./prepare_assets.sh
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+      - name: Update versions repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.VERSIONS_TOKEN }}
+          GITHUB_USERNAME: vundyalaavinash
+        run: |
+          if [[ -z "$GITHUB_TOKEN" ]]; then
+            echo "VERSIONS_TOKEN not set, skipping"
+          else
+            ./update_version.sh
+          fi
+      - name: Clean up keychain
+        if: always()
+        run: |
+          KEYCHAIN=$RUNNER_TEMP/buildagent.keychain
+          [[ -f "$KEYCHAIN" ]] && security delete-keychain "$KEYCHAIN" || true
+
+  linux-compile:
+    needs: version
+    runs-on: ubuntu-22.04
+    env:
+      OS_NAME: linux
+      VSCODE_ARCH: x64
+      DISABLE_UPDATE: "yes"
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+      MS_TAG: ${{ needs.version.outputs.MS_TAG }}
+      MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
+    outputs:
+      BUILD_SOURCEVERSION: ${{ env.BUILD_SOURCEVERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: egor-tensin/setup-gcc@v2
+        with:
+          version: 10
+          platform: x64
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update -y && sudo apt-get install -y libkrb5-dev
+      - run: . ./get_repo.sh
+      - name: Compile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+      - name: Compress vscode artifact
+        run: |
+          find vscode -type f -not -path "*/node_modules/*" -not -path "vscode/.build/node/*" -not -path "vscode/.git/*" > vscode.txt
+          echo "vscode/.build/extensions/node_modules" >> vscode.txt
+          echo "vscode/.git" >> vscode.txt
+          tar -czf vscode.tar.gz -T vscode.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vscode-linux
+          path: ./vscode.tar.gz
+          retention-days: 1
+
+  linux:
+    needs: [version, linux-compile]
+    runs-on: ubuntu-latest
+    container:
+      image: vscodium/vscodium-linux-build-agent:focal-x64
+    permissions:
+      contents: write
+    env:
+      OS_NAME: linux
+      VSCODE_ARCH: x64
+      DISABLE_UPDATE: "yes"
+      CI_BUILD: "yes"
+      npm_config_arch: x64
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+      MS_TAG: ${{ needs.version.outputs.MS_TAG }}
+      MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
+      BUILD_SOURCEVERSION: ${{ needs.linux-compile.outputs.BUILD_SOURCEVERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: ./build/linux/install_gh.sh
+      - run: ./build/linux/deps.sh
+      - uses: actions/download-artifact@v8
+        with:
+          name: vscode-linux
+      - name: Package binary
+        id: build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build/linux/package_bin.sh
+      - name: Save binary for AppImage
+        run: tar -czf vscode-bin.tar.gz -C "VSCode-linux-x64" .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vscode-bin-x64
+          path: ./vscode-bin.tar.gz
+          retention-days: 1
+      - name: Prepare assets (tar, deb, rpm)
+        env:
+          VSCODE_SYSROOT_REPOSITORY: ${{ steps.build.outputs.VSCODE_SYSROOT_REPOSITORY }}
+          VSCODE_SYSROOT_VERSION: ${{ steps.build.outputs.VSCODE_SYSROOT_VERSION }}
+          VSCODE_SYSROOT_PREFIX: ${{ steps.build.outputs.VSCODE_SYSROOT_PREFIX }}
+        run: ./prepare_assets.sh
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+
+  appimage:
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    container: ghcr.io/pkgforge-dev/archlinux:v2026.08.31
+    permissions:
+      contents: write
+    env:
+      OS_NAME: linux
+      VSCODE_ARCH: x64
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pkgforge-dev/anylinux-setup-action@v5
+      - uses: actions/download-artifact@v8
+        with:
+          name: vscode-bin-x64
+      - run: ./build/linux/anylinux-appimage/build.sh
+      - run: ./build/linux/anylinux-appimage/prepare_assets.sh
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+
+  windows-compile:
+    needs: version
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      OS_NAME: windows
+      VSCODE_ARCH: x64
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+      MS_TAG: ${{ needs.version.outputs.MS_TAG }}
+      MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
+    outputs:
+      BUILD_SOURCEVERSION: ${{ env.BUILD_SOURCEVERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: . ./get_repo.sh
+      - name: Compile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build.sh
+      - name: Compress vscode artifact
+        run: |
+          find vscode -type f -not -path "*/node_modules/*" -not -path "vscode/.build/node/*" -not -path "vscode/.git/*" > vscode.txt
+          echo "vscode/.build/extensions/node_modules" >> vscode.txt
+          echo "vscode/.git" >> vscode.txt
+          tar -czf vscode.tar.gz -T vscode.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vscode-windows
+          path: ./vscode.tar.gz
+          retention-days: 1
+
+  windows:
+    needs: [version, windows-compile]
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: write
+    env:
+      OS_NAME: windows
+      VSCODE_ARCH: x64
+      CI_BUILD: "yes"
+      npm_config_arch: x64
+      npm_config_target_arch: x64
+      RELEASE_VERSION: ${{ needs.version.outputs.RELEASE_VERSION }}
+      MS_TAG: ${{ needs.version.outputs.MS_TAG }}
+      MS_COMMIT: ${{ needs.version.outputs.MS_COMMIT }}
+      BUILD_SOURCEVERSION: ${{ needs.windows-compile.outputs.BUILD_SOURCEVERSION }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v8
+        with:
+          name: vscode-windows
+      - name: Package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./build/windows/package.sh
+      - name: Prepare assets (zip, installers)
+        run: ./prepare_assets.sh
+      - run: ./prepare_checksums.sh
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./release.sh
+      - name: Update versions repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.VERSIONS_TOKEN }}
+          GITHUB_USERNAME: vundyalaavinash
+        run: |
+          if [[ -z "$GITHUB_TOKEN" ]]; then
+            echo "VERSIONS_TOKEN not set, skipping"
+          else
+            ./update_version.sh
+          fi
