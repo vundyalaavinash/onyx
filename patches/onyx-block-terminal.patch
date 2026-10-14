@@ -25,10 +25,10 @@ index 00000000..a71ce205
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
 new file mode 100644
-index 00000000..688b6655
+index 00000000..0fd6c8f3
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlockModel.ts
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,173 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -72,8 +72,12 @@ index 00000000..688b6655
 +	get endLine(): number | undefined { return liveLine(this.command?.endMarker); }
 +	get exitCode(): number | undefined { return this.command?.exitCode; }
 +	get isRunning(): boolean { return this.command === undefined; }
-+	get startMarker(): IMarker | undefined {
-+		return this.command?.promptStartMarker ?? this.command?.marker ?? this.partial?.promptStartMarker ?? this.partial?.commandStartMarker;
++	/** Every marker that contributes to this block's lines. */
++	get markers(): IMarker[] {
++		const all = this.command
++			? [this.command.promptStartMarker, this.command.marker, this.command.endMarker]
++			: [this.partial?.promptStartMarker, this.partial?.commandStartMarker];
++		return all.filter((m): m is IMarker => !!m);
 +	}
 +}
 +
@@ -129,7 +133,12 @@ index 00000000..688b6655
 +			}
 +		}
 +		const partial = cap.currentCommand;
-+		if (partial && (partial.promptStartMarker || partial.commandStartMarker) && !partial.isInvalid && partial.command !== undefined) {
++		// Upstream pushes the finished command before it replaces currentCommand, so the stale partial can still be set.
++		const last = cap.commands.at(-1);
++		const partialFinished = !!partial && !!last && (
++			(!!partial.commandStartMarker && partial.commandStartMarker === last.marker) ||
++			(!!partial.promptStartMarker && partial.promptStartMarker === last.promptStartMarker));
++		if (partial && !partialFinished && (partial.promptStartMarker || partial.commandStartMarker) && !partial.isInvalid && partial.command !== undefined) {
 +			if (this._runningId === undefined) {
 +				this._runningId = this._nextId++;
 +			}
@@ -152,9 +161,10 @@ index 00000000..688b6655
 +	private _watchMarkers(): void {
 +		this._markerListeners.clear();
 +		for (const b of this._blocks) {
-+			const m = b.startMarker;
-+			if (m && !m.isDisposed) {
-+				this._markerListeners.add(m.onDispose(() => this.refresh()));
++			for (const m of b.markers) {
++				if (!m.isDisposed) {
++					this._markerListeners.add(m.onDispose(() => this.refresh()));
++				}
 +			}
 +		}
 +	}
@@ -370,10 +380,10 @@ index 00000000..8c034435
 +};
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
 new file mode 100644
-index 00000000..f1d3e942
+index 00000000..b8bc6eee
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/test/browser/onyxBlockModel.test.ts
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,182 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -476,6 +486,21 @@ index 00000000..f1d3e942
 +		strictEqual(model.blocks[0].id, runningId);
 +	});
 +
++	test('finished command with the stale partial still set yields one finished block', () => {
++		model.attach(cap.asCapability());
++		const prompt = marker(0);
++		const start = marker(1);
++		cap.currentCommand = { promptStartMarker: prompt, commandStartMarker: start, command: 'ls' } as unknown as ICurrentPartialCommand;
++		cap.onCommandStarted.fire({ marker: start } as unknown as ITerminalCommand);
++		const runningId = model.blocks[0].id;
++		const finished = { command: 'ls', exitCode: 0, promptStartMarker: prompt, marker: start, endMarker: marker(3) } as unknown as ITerminalCommand;
++		cap.commands.push(finished);
++		cap.onCommandFinished.fire(finished); // upstream fires before replacing currentCommand
++		strictEqual(model.blocks.length, 1);
++		strictEqual(model.blocks[0].isRunning, false);
++		strictEqual(model.blocks[0].id, runningId);
++	});
++
 +	test('commands with no markers are skipped', () => {
 +		cap.commands.push({ command: 'ghost', exitCode: 0 } as unknown as ITerminalCommand, command('ls', 0, 1));
 +		model.attach(cap.asCapability());
@@ -491,6 +516,17 @@ index 00000000..f1d3e942
 +		(c.promptStartMarker as IMarker & { dispose(): void }).dispose();
 +		strictEqual(model.blocks.length, 0);
 +		strictEqual(model.selectedId, undefined);
++	});
++
++	test('a block survives its prompt marker being disposed first and goes when the fallback marker is disposed', () => {
++		const c = command('ls', 0, 3);
++		cap.commands.push(c);
++		model.attach(cap.asCapability());
++		(c.promptStartMarker as IMarker & { dispose(): void }).dispose();
++		strictEqual(model.blocks.length, 1);
++		strictEqual(model.blocks[0].startLine, 1);
++		(c.marker as IMarker & { dispose(): void }).dispose();
++		strictEqual(model.blocks.length, 0);
 +	});
 +
 +	test('invalidated commands are removed', () => {
