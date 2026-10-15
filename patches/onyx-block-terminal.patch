@@ -854,10 +854,10 @@ index 00000000..1ba918e6
 +}
 diff --git a/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
 new file mode 100644
-index 00000000..d2525198
+index 00000000..dbff656e
 --- /dev/null
 +++ b/src/vs/workbench/contrib/terminalContrib/onyxBlocks/browser/onyxBlocksContribution.ts
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,485 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Onyx contributors. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -1039,6 +1039,13 @@ index 00000000..d2525198
 +		this._enabledParts.add(capability.promptInputModel.onDidInterrupt(update));
 +		this._enabledParts.add(xterm.raw.buffer.onBufferChange(update));
 +		update();
++		this._applyCursorStyle();
++		// Upstream re-applies cursorStyleInactive on terminal config changes; apply ours after it.
++		this._enabledParts.add(this._configurationService.onDidChangeConfiguration(e => {
++			if (e.affectsConfiguration('terminal.integrated')) {
++				queueMicrotask(() => this._applyCursorStyle());
++			}
++		}));
 +
 +		// Text that reaches the shell line directly (sendText, a dropped path, type-ahead) moves into the input.
 +		this._enabledParts.add(capability.promptInputModel.onDidStartInput(() => this._sentByInput = false));
@@ -1083,6 +1090,7 @@ index 00000000..d2525198
 +		this._enabledParts.clear();
 +		this._input.clear();
 +		this.model.detach();
++		this._applyCursorStyle();
 +		const wrapper = this._ctx.instance.domElement;
 +		if (wrapper) {
 +			wrapper.classList.remove('onyx-blocks');
@@ -1144,6 +1152,7 @@ index 00000000..d2525198
 +			return;
 +		}
 +		this._state = next;
++		this._applyCursorStyle();
 +		input.setVisible(next !== InputState.AltBuffer);
 +		input.setInactive(next === InputState.Executing);
 +		if (next === InputState.AltBuffer) {
@@ -1154,6 +1163,23 @@ index 00000000..d2525198
 +			} else {
 +				xterm.raw.focus();
 +			}
++		}
++	}
++
++	/**
++	 * At a prompt the input owns the keyboard, so xterm would draw its unfocused cursor on the shell's
++	 * prompt line. Hide it then; otherwise use the user's terminal.integrated.cursorStyleInactive.
++	 */
++	private _applyCursorStyle(): void {
++		const raw = this._xterm?.raw;
++		if (!raw) {
++			return;
++		}
++		const hide = this._isEnabled && this._state === InputState.Prompt;
++		const configured = this._configurationService.getValue<string>('terminal.integrated.cursorStyleInactive') ?? 'outline';
++		const style = hide ? 'none' : configured === 'line' ? 'bar' : configured as RawXtermTerminal['options']['cursorInactiveStyle'];
++		if (raw.options.cursorInactiveStyle !== style) {
++			raw.options.cursorInactiveStyle = style;
 +		}
 +	}
 +
