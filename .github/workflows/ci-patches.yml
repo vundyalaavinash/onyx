@@ -27,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Unit checks
-        run: ./test/syntax.sh && ./test/brand.sh && ./test/product.sh
+        run: ./test/syntax.sh && ./test/brand.sh && ./test/product.sh && ./test/blocks.sh
       - name: Clone upstream
         run: . ./get_repo.sh
       - name: Apply patches without installing

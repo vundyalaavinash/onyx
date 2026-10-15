@@ -6,6 +6,26 @@ A Warp-styled, open-source build of VS Code (Code - OSS). Pure black, Hack font,
 
 Grab the latest build from [Releases](https://github.com/vundyalaavinash/onyx/releases). macOS builds are ad-hoc signed until an Apple Developer ID is configured. On first launch macOS will refuse the app; open System Settings, Privacy & Security, and choose Open Anyway, or run `xattr -dr com.apple.quarantine /Applications/Onyx.app`. Install the [Hack](https://sourcefoundry.org/hack/) font for the intended look (`brew install --cask font-hack`); without it Onyx falls back to the platform monospace.
 
+## Block terminal
+
+Every Onyx terminal has a command input pinned at the bottom and one block per
+command above it. Type anywhere in the terminal and the text lands in the input.
+Enter runs, Shift+Enter adds a line, Up and Down walk history, Tab completes.
+Hover a block for Copy command, Copy output, Re-run and Send to agent. Cmd+Up
+and Cmd+Down (Ctrl on Linux and Windows) select blocks; Escape clears the
+selection. Full-screen programs such as vim get the classic terminal back
+while they run.
+
+Blocks need shell integration, which Onyx injects for zsh, bash, fish and
+PowerShell. A shell without it behaves like a stock VS Code terminal. Turn the
+feature off with `onyx.terminal.blocks.enabled: false`. Without shell
+integration, or with the setting off, the terminal is the stock VS Code terminal.
+
+This is Onyx's one core patch: `patches/onyx-block-terminal.patch`. Its source
+is `vscode/src/vs/workbench/contrib/terminalContrib/onyxBlocks/` after
+`just prepare`; edit there, then run `just blocks-patch` and commit the patch.
+`just test` checks the patch stays inside its allowed files.
+
 ## Build locally (macOS)
 
 ```
